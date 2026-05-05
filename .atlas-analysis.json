@@ -1,0 +1,89 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "How to Train Your GPT",
+  "projectDescription": "A 12-chapter, fully annotated interactive textbook for building a modern LLaMA-style language model from scratch using Python and PyTorch.",
+  "theme": "palm",
+  "primaryColor": "#94cb04",
+  "lightColor": "#545454",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Learn",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Foundations",
+            "pages": [
+              "concepts/tokenization",
+              "concepts/embeddings",
+              "concepts/positional-encoding"
+            ]
+          },
+          {
+            "group": "Core Architecture",
+            "pages": [
+              "architecture/attention",
+              "architecture/transformer-block",
+              "architecture/gpt-model"
+            ]
+          },
+          {
+            "group": "Training & Inference",
+            "pages": [
+              "training/pipeline",
+              "training/inference",
+              "training/full-script"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/glossary",
+              "reference/architecture-techniques",
+              "reference/next-steps"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "12-chapter structured curriculum from zero to working GPT",
+    "Every line of code annotated with WHAT and WHY",
+    "LLaMA 3-style architecture: RoPE, RMSNorm, SwiGLU, Pre-Norm",
+    "Full training pipeline: AdamW, cosine warmup, mixed precision, gradient accumulation",
+    "Inference engine with KV cache, temperature, top-k/p, beam search",
+    "5-year-old analogies plus rigorous math and worked numeric examples",
+    "Runnable main.py with both tiny (CPU) and small (GPU) configurations",
+    "BPE tokenizer walkthrough matching GPT-4 algorithm"
+  ],
+  "publicApiSurface": [
+    "GPTConfig — model hyperparameters (vocab_size, d_model, num_heads, num_layers, max_seq_len)",
+    "GPT — complete 124M parameter decoder-only Transformer model",
+    "MultiHeadAttention — scaled dot-product attention with causal mask and RoPE",
+    "RotaryPositionalEmbedding — RoPE implementation",
+    "RMSNorm — root mean square layer normalization",
+    "SwiGLU — gated feed-forward network",
+    "TransformerBlock — attention + feed-forward + residuals",
+    "SimpleTokenizer / TokenizerConfig — BPE tokenizer",
+    "TextDataset — PyTorch dataset for next-token prediction",
+    "CosineWarmupScheduler — learning rate schedule",
+    "create_optimizer — AdamW optimizer setup",
+    "train — full training loop with mixed precision",
+    "generate_text — inference with temperature, top-k, top-p, beam search",
+    "create_causal_mask — autoregressive attention mask",
+    "load_checkpoint — model checkpoint loading"
+  ]
+}

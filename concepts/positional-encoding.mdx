@@ -1,0 +1,315 @@
+---
+title: "Positional Encoding: Teaching the Model Word Order"
+description: "Learn why Transformers need position signals, how RoPE rotates Q and K vectors by position angle, and how it compares to learned and sinusoidal encoding."
+---
+
+The Transformer architecture reads all tokens in a sequence simultaneously — it has no built-in notion of which word comes first and which comes last. Without an explicit position signal, the sentence "The cat chased the dog" would look identical to "The dog chased the cat": same tokens, same embeddings, no way to tell them apart. Positional encoding is the mechanism that stamps each token's representation with its location in the sequence, and the technique you choose has a significant impact on how well your model generalizes to long contexts.
+
+## Why position matters
+
+Consider these two sentences:
+
+- "The **dog** bit the **man**." — scary
+- "The **man** bit the **dog**." — bizarre
+
+Same words. Completely different meanings. A Transformer that ignores order would assign them identical representations. To prevent this, you must inject position information into the token representations before the first attention layer processes them.
+
+## Three generations of positional encoding
+
+Different approaches to encoding position have emerged over the history of Transformer research. Each trades simplicity for capability:
+
+<Tabs>
+  <Tab title="Learned">
+    Each position index (0, 1, 2, …) gets its own learned embedding vector — a row in a separate position embedding table, exactly like the token embedding table.
+
+    **How it works:** The model learns a vector for "position 0", "position 1", and so on. These are added to the token embeddings before the first attention layer.
+
+    **Pros:** Simple to implement, flexible, and no mathematical constraints on what patterns it can represent.
+
+    **Cons:** The table has a fixed maximum length. If you train on sequences up to 2,048 tokens, the model has never seen a "position 2,049" embedding and cannot generalize beyond that length.
+
+    **Used by:** GPT-2, BERT, early GPT-3 variants.
+  </Tab>
+  <Tab title="Sinusoidal">
+    Instead of learned vectors, fixed sine and cosine waves of different frequencies encode each position. Position `p` in dimension `2i` gets `sin(p / 10000^(2i/d_model))` and dimension `2i+1` gets `cos(p / 10000^(2i/d_model))`.
+
+    **How it works:** A deterministic formula produces a unique vector for every position. No parameters needed.
+
+    **Pros:** Generalizes to sequences longer than those seen during training because the formula works for any `p`.
+
+    **Cons:** The model attends based on absolute position rather than relative distance. "Token 10 attends to token 8" and "token 110 attends to token 108" are treated as different relationships even though the relative gap is the same.
+
+    **Used by:** The original "Attention Is All You Need" Transformer (2017).
+  </Tab>
+  <Tab title="RoPE">
+    Rotary Position Embeddings do not add a position vector to the token representation. Instead, they **rotate** the query and key vectors inside the attention mechanism by an angle that depends on position. The rotation is applied just before the attention dot product is computed.
+
+    **How it works:** For each pair of dimensions `(2i, 2i+1)` in Q and K, rotate by angle `θ(p, i) = p / (10000^(2i/d_model))`. Lower dimension pairs rotate fast (capturing local order), higher pairs rotate slowly (capturing long-range relationships).
+
+    **Pros:** The dot product `Q_i · K_j` depends only on the relative distance `(j - i)`, not on absolute positions. Generalizes to longer sequences. No extra learned parameters.
+
+    **Cons:** Slightly more complex to implement than learned or sinusoidal approaches.
+
+    **Used by:** LLaMA 1/2/3, Mistral, Mixtral, Qwen 1/2, Gemma — every major open-weight model released after 2023.
+  </Tab>
+</Tabs>
+
+<Note>
+This project implements RoPE because it is what every production-quality open-weight model uses today. The relative-distance property is not just mathematically elegant — it measurably improves performance on tasks requiring the model to reason about which tokens are near each other.
+</Note>
+
+## The RoPE intuition: rotating vectors
+
+In two dimensions, rotating a vector `(x, y)` by angle `θ` produces:
+
+```
+x' = x*cos(θ) - y*sin(θ)
+y' = x*sin(θ) + y*cos(θ)
+```
+
+RoPE applies exactly this rotation to **every pair of dimensions** in the query and key vectors. The rotation angle for position `p` and dimension pair index `i` is:
+
+```
+θ(p, i) = p / (10000^(2i/d_model))
+```
+
+The key insight: when you compute the dot product of a rotated query at position `i` with a rotated key at position `j`, the result depends **only on `(j - i)`** — the relative distance between the two tokens. Absolute position cancels out. This is why RoPE gives attention exactly the property it needs: care about *how far apart* tokens are, not *where* they are in the document.
+
+## A worked numeric example
+
+Here is a complete trace of RoPE with a minimal model (`d_model=4`) at position `p=1`.
+
+**Step 1: compute frequencies for each dimension pair**
+
+```
+Pair 0 (dims 0,1): freq = 1 / 10000^(0/4)   = 1 / 1         = 1.000
+Pair 1 (dims 2,3): freq = 1 / 10000^(2/4)   = 1 / 10000^0.5 = 0.010
+```
+
+**Step 2: compute rotation angle for position p=1**
+
+```
+Pair 0 angle: θ₀ = p * freq₀ = 1 * 1.000 = 1.000 radian (≈ 57.3°)
+Pair 1 angle: θ₁ = p * freq₁ = 1 * 0.010 = 0.010 radian (≈ 0.57°)
+```
+
+**Step 3: apply rotation to query vector at position 1**
+
+```
+Before RoPE: q₁ = [0.8, 0.3, -0.5, 0.2]
+
+Rotate pair 0 (dims 0,1) by 57.3°:
+  dim0' = 0.8*cos(1.0) - 0.3*sin(1.0) = 0.8*0.540 - 0.3*0.842 = 0.432 - 0.253 = 0.179
+  dim1' = 0.8*sin(1.0) + 0.3*cos(1.0) = 0.8*0.842 + 0.3*0.540 = 0.674 + 0.162 = 0.836
+
+Rotate pair 1 (dims 2,3) by 0.57°:
+  dim2' = -0.5*cos(0.01) - 0.2*sin(0.01) = -0.5*1.000 - 0.2*0.010 = -0.500 - 0.002 = -0.502
+  dim3' = -0.5*sin(0.01) + 0.2*cos(0.01) = -0.5*0.010 + 0.2*1.000 = -0.005 + 0.200 = 0.195
+
+After RoPE: q₁' = [0.179, 0.836, -0.502, 0.195]
+```
+
+**Step 4: verify that only relative distance matters**
+
+```
+Position 1: θ₀ = 1.0 rad,  θ₁ = 0.01 rad
+Position 3: θ₀ = 3.0 rad,  θ₁ = 0.03 rad
+
+The dot product q₁ · k₃ will depend on the DIFFERENCE:
+  Δθ₀ = 3.0 - 1.0 = 2.0 rad
+  Δθ₁ = 0.03 - 0.01 = 0.02 rad
+  
+This difference depends ONLY on (3-1)=2, the relative distance!
+Absolute positions don't matter — only how far apart they are.
+```
+
+## Why theta = 10000?
+
+The base frequency `theta = 10000` controls the spread of rotation speeds across dimension pairs:
+
+```
+Low theta (e.g., 100):
+  - All dimension pairs rotate at similar speeds
+  - Model is more "position-agnostic" — better for long contexts
+  - But loses fine-grained position resolution
+
+High theta (e.g., 100000):
+  - Very different rotation speeds across dimensions
+  - Better at distinguishing nearby positions
+  - But struggles with very long contexts
+
+10000 was found empirically to balance these tradeoffs.
+```
+
+<Tip>
+Recent models extending RoPE to very long contexts (e.g., 128K or 1M tokens) often use a larger base theta — Llama 3's 8B and 70B models use `theta = 500000`. The YaRN technique adjusts theta differently for different frequency bands, further improving long-context quality without full retraining.
+</Tip>
+
+## The RotaryPositionalEmbedding class — annotated
+
+```python
+import torch
+import torch.nn as nn
+import math
+
+
+class RotaryPositionalEmbedding(nn.Module):
+    """
+    WHAT: Rotary Position Embeddings (RoPE).
+    WHY: Instead of ADDING position info to embeddings,
+         we ROTATE Q and K vectors by position-dependent angles.
+         The dot product q_i · k_j then depends ONLY on (j-i),
+         which is exactly what attention should care about.
+
+         Paper: "RoFormer" (Su et al., 2021)
+         Used in: LLaMA 1/2/3, Mistral, Mixtral, Qwen 1/2, Gemma
+
+         How it works at a glance:
+         1. For each pair of dimensions (0,1), (2,3), (4,5), ...
+         2. Rotate by angle = position * frequency
+         3. Lower dims rotate fast (local position)
+            Higher dims rotate slow (global position)
+         4. The dot product naturally depends on relative distance
+    """
+
+    def __init__(self, d_model: int, max_seq_len: int = 2048, theta: float = 10000.0):
+        """
+        WHAT: Precompute rotation frequencies for fast lookup.
+
+        Args:
+            d_model:     Head dimension (e.g., 64 for GPT-2). Must be even.
+            max_seq_len: Precompute angles for positions 0..max_seq_len-1.
+            theta:       Base frequency. 10000 is standard. Controls the
+                         spread between fast and slow rotation frequencies.
+        """
+        super().__init__()
+
+        # WHAT: Verify d_model is even (must have pairs to rotate)
+        assert d_model % 2 == 0, (
+            f"d_model ({d_model}) must be even for RoPE. "
+            f"Each pair of dimensions needs a partner to rotate with."
+        )
+
+        # WHAT: Create dimension indices: [0, 2, 4, ..., d_model-2]
+        # WHY: Each pair (2i, 2i+1) gets the same rotation frequency.
+        #      We only need half the indices because pairs share.
+        dim_indices = torch.arange(0, d_model, 2).float()
+
+        # WHAT: Compute rotation frequencies
+        # WHY: theta_i = 1 / (theta ^ (2i / d_model))
+        #
+        #      i=0:  1 / 10000^(0/64)      = 1.0      → fast rotation (local)
+        #      i=30: 1 / 10000^(60/64)     ≈ 0.0001   → slow rotation (global)
+        #
+        #      This multi-scale approach means some dimensions
+        #      capture local word order while others capture
+        #      long-range position relationships.
+        inv_freq = 1.0 / (theta ** (dim_indices / d_model))
+
+        # WHAT: Precompute angles for all positions
+        # WHY: Computing cos/sin during training is expensive.
+        #      Precomputing them once and caching is 100x faster.
+        positions = torch.arange(max_seq_len).float()     # [0, 1, 2, ..., 2047]
+
+        # WHAT: Outer product: each position x each frequency
+        #       freqs[p, i] = p * inv_freq[i] = angle for position p, dim pair i
+        #       Shape: [max_seq_len, d_model/2]
+        freqs = torch.outer(positions, inv_freq)
+
+        # WHAT: Duplicate to full dimension
+        # WHY: Each dim pair (2i, 2i+1) gets the same angle,
+        #      so we copy each angle: [θ0, θ1, θ2, ...] -> [θ0, θ0, θ1, θ1, ...]
+        emb = torch.cat([freqs, freqs], dim=-1)         # [max_seq_len, d_model]
+
+        # WHAT: Cache cos and sin for all positions
+        # WHY: register_buffer means these move with model.to(device)
+        #      and are saved with model.state_dict(), but are NOT
+        #      trainable parameters (no gradients needed).
+        self.register_buffer("cos_cached", emb.cos())   # cos of each angle
+        self.register_buffer("sin_cached", emb.sin())   # sin of each angle
+
+    @staticmethod
+    def rotate_half(x: torch.Tensor) -> torch.Tensor:
+        """
+        WHAT: Prepare a vector for the rotation formula.
+        WHY:  The rotation formula is: x' = x*cos + rotate_half(x)*sin
+        
+              For vector [x0, x1, x2, x3, x4, x5]:
+              rotate_half returns [-x1, x0, -x3, x2, -x5, x4]
+              
+              Why this works: For pair (x0, x1) rotated by angle θ:
+                x0' = x0*cos(θ) - x1*sin(θ)   ← matches: x0*cos + (-x1)*sin
+                x1' = x0*sin(θ) + x1*cos(θ)   ← matches: x1*cos + (x0)*sin
+              
+              So executing (x*cos + rotate_half(x)*sin) performs rotation
+              on every dimension pair simultaneously — no loop needed!
+        """
+        x1 = x[..., : x.shape[-1] // 2]   # First half:  [x0, x2, x4, ...]
+        x2 = x[..., x.shape[-1] // 2 :]   # Second half: [x1, x3, x5, ...]
+        return torch.cat([-x2, x1], dim=-1)  # [-x1, x0, -x3, x2, -x5, x4, ...]
+
+    def forward(self, x: torch.Tensor, seq_len: int) -> torch.Tensor:
+        """
+        WHAT: Apply RoPE to queries or keys.
+
+        Input:  [batch, seq_len, num_heads, head_dim]
+                x can be either Q or K (NOT V — values don't need position)
+        Output: Same shape, rotated by position-dependent angles
+
+        WHY applied only to Q and K:
+        The attention score = Q_i · K_j controls WHICH values to attend to.
+        We want this score to depend on relative position.
+        The VALUE vectors carry content — position is irrelevant for the
+        content itself. Position only matters for deciding which tokens
+        to pay attention TO.
+        """
+        # WHAT: Extract cos and sin for current sequence length
+        # WHY: If seq_len=512 but max_seq_len=2048, we only need
+        #      the first 512 rows of the cached cos/sin tables.
+        cos = self.cos_cached[:seq_len]   # [seq_len, head_dim]
+        sin = self.sin_cached[:seq_len]   # [seq_len, head_dim]
+
+        # WHAT: Add batch and head dimensions for broadcasting
+        # WHY: cos/sin are [seq_len, head_dim]. We need them to
+        #      multiply with x [batch, heads, seq_len, head_dim].
+        #      unsqueeze(0).unsqueeze(0) adds dims at positions 0 and 1:
+        #      [seq_len, head_dim] -> [1, 1, seq_len, head_dim]
+        #      Now they broadcast correctly over batch and heads.
+        cos = cos.unsqueeze(0).unsqueeze(0)
+        sin = sin.unsqueeze(0).unsqueeze(0)
+
+        # WHAT: Execute rotation: x_rotated = x*cos(θ) + rotate_half(x)*sin(θ)
+        # WHY: This is mathematically equivalent to applying a 2D rotation
+        #      matrix to each pair of dimensions, but implemented in pure
+        #      element-wise operations — much faster and parallelizable.
+        return (x * cos) + (self.rotate_half(x) * sin)
+```
+
+<Note>
+RoPE is applied to queries and keys only — **not values**. Values carry the content that gets aggregated; they don't need to encode position. Only the attention scores (computed from Q·K) need to be position-aware, since those scores determine which tokens the model attends to.
+</Note>
+
+## Extending context beyond training length
+
+What happens if you train on sequences of 2,048 tokens but want to generate 4,096 tokens at inference?
+
+The RoPE tables are precomputed for positions 0–2,047. Position 3,000 was never seen during training.
+
+| Method | How it works | Quality |
+|---|---|---|
+| **Linear interpolation** | Divide position by scale factor (e.g., `p/2` for 2× length) | Acceptable, loses resolution |
+| **NTK-aware scaling** | Scale `theta` differently for each frequency band | Good |
+| **YaRN** | NTK + temperature scaling on attention scores | Best; used in production |
+| **Retrain** | Train from scratch on longer sequences | Perfect, but expensive |
+
+For a small training run, this does not matter. But it is an active research area for production systems that need 128K+ context windows.
+
+## Method comparison
+
+| | Learned | Sinusoidal | RoPE |
+|---|---|---|---|
+| Extra parameters | Yes (position table) | No | No |
+| Fixed max length | Yes | No | No (precomputed, extendable) |
+| Relative distances | No | Weak | Yes — by construction |
+| Complexity | Low | Low | Medium |
+| Production usage | GPT-2, BERT | Original Transformer | LLaMA, Mistral, Qwen, Gemma |

@@ -1,0 +1,388 @@
+---
+title: "Attention: How Transformers Focus on What Matters Most"
+description: "Learn how scaled dot-product attention, causal masking, and multi-head attention let language models reason about every token in a sequence at once."
+---
+
+Attention is the mechanism at the heart of every modern large language model. Rather than processing words one at a time like RNNs, attention lets each token look at every other token simultaneously and decide how much each one matters for understanding the current context. If you understand attention deeply, you understand how GPT-style models work — because attention is not just a part of the Transformer, it *is* the Transformer.
+
+## The party analogy
+
+You walk into a crowded party. You want to understand what's happening. You don't listen to everyone equally — you pay more attention to the person you're talking to (high relevance), the person shouting loudly (high importance), and the conversation about your favourite topic (high match with your interests).
+
+Attention works the same way. Given a sentence like `"The cat chased the mouse because it was hungry"`, when the model processes `"it"`, it needs to figure out what `"it"` refers to. A well-trained model assigns high attention weight to `"cat"` (0.72), moderate attention to `"mouse"` (0.21), and almost none to function words like `"the"` (0.04) or `"chased"` (0.03).
+
+**Attention is the model's ability to look at all words and decide: "How much should I care about this word right now?"**
+
+## Self-attention: the core idea
+
+### The problem it solves
+
+Consider the sentence: **"The cat sat on the mat because it was warm."**
+
+What does `"it"` refer to? The cat? The mat? A human instantly knows it means `"mat"`, because mats can be warm surfaces. But how does a computer figure this out?
+
+**Before attention (RNNs, LSTMs):** Words were processed one at a time, left to right. By the time the model reached `"it"`, the word `"mat"` was far in the past — its information had faded.
+
+**With attention:** The model can look back at all previous words simultaneously and decide that `"mat"` matches `"it"` best because `"warm"` is often associated with surfaces and objects.
+
+### What self-attention computes
+
+For every word in a sequence, self-attention creates a **new representation** of that word as a **weighted mixture of all words in the sequence**:
+
+```text
+New("it") = 0.72 × cat + 0.21 × mouse + 0.04 × the + 0.03 × chased
+```
+
+The weights (0.72, 0.21, 0.04, 0.03) are the **attention scores** — they tell you how much each word matters when building the context-aware representation of `"it"`.
+
+## Q, K, V — queries, keys, and values
+
+Every token produces three vectors from its embedding:
+
+- **Query (Q):** "What am I looking for?" — the token's search request
+- **Key (K):** "What do I have to offer?" — the token's description of its own content
+- **Value (V):** "My actual content/information" — what gets mixed into the output
+
+These vectors are produced by multiplying the input embedding by three learned weight matrices `W_q`, `W_k`, and `W_v`. The dot product of a query with a key measures how well that token's search matches what the other token is offering. A high dot product means high relevance.
+
+## The 8-step worked example
+
+Here is a complete trace through attention with real simplified numbers. The example uses `d_model=4` and `num_heads=2`, with the sentence `"I love dogs"` after tokenization and embedding:
+
+```text
+Token 0 ("I"):    [0.5,  0.2, -0.3,  0.8]
+Token 1 ("love"): [0.1, -0.5,  0.7, -0.2]
+Token 2 ("dogs"): [0.9,  0.3, -0.1, -0.5]
+```
+
+After projecting to Q, K, V with `head_dim=2`:
+
+```text
+Token │ Query (Q)    │ Key (K)      │ Value (V)
+──────┼──────────────┼──────────────┼──────────────
+ 0:"I"    │ [ 0.8,  0.1] │ [ 0.6, -0.3] │ [ 0.4,  0.9]
+ 1:"love" │ [-0.2,  0.7] │ [ 0.1,  0.5] │ [-0.3,  0.2]
+ 2:"dogs" │ [ 0.5, -0.4] │ [-0.4,  0.8] │ [ 0.7, -0.1]
+```
+
+<Steps>
+  <Step title="Create Q, K, V from the input">
+    Multiply each token's embedding by the learned weight matrices `W_q`, `W_k`, and `W_v` to produce a Query, Key, and Value vector per token. These matrices start random and are learned during training to project tokens into useful spaces.
+  </Step>
+
+  <Step title="Compute raw attention scores">
+    The attention score between token `i` (query) and token `j` (key) is their dot product: `score(i→j) = Q_i · K_j`. A high dot product means the query matches the key well.
+
+    For token 2 (`"dogs"`) looking at all tokens:
+
+    ```
+    score("dogs"→"I")    = [0.5, -0.4] · [ 0.6, -0.3] = 0.30 + 0.12 =  0.42
+    score("dogs"→"love") = [0.5, -0.4] · [ 0.1,  0.5] = 0.05 - 0.20 = -0.15
+    score("dogs"→"dogs") = [0.5, -0.4] · [-0.4,  0.8] = -0.20 - 0.32 = -0.52
+    ```
+  </Step>
+
+  <Step title="Scale by 1/√d_k">
+    Divide each score by `sqrt(head_dim)` = `sqrt(2)` ≈ 1.414:
+
+    ```
+    Scaled scores: [0.42/1.414, -0.15/1.414, -0.52/1.414] = [0.297, -0.106, -0.368]
+    ```
+
+    <Note>
+      **Why scale at all?** If each element of Q and K has mean 0 and variance 1, the variance of their dot product is `d_k`. With `d_k = 64`, dot products have a standard deviation of 8, meaning typical values range from about −24 to +24. At those magnitudes, `softmax` becomes extremely peaked — one value approaches 1.0 and all others approach 0.0, so gradients vanish and the model stops learning.
+
+      After dividing by `√64 = 8`, the variance returns to 1.0 and values range from about −3 to +3:
+
+      ```
+      Without scaling:  softmax([24, 8, -16]) = [0.99999988, 0.00000011, 0.00000000]  ← useless!
+      With scaling:     softmax([3, 1, -2])   = [0.88, 0.12, 0.01]                    ← useful!
+      ```
+
+      Scaling keeps the variance at 1.0 regardless of `d_k`.
+    </Note>
+  </Step>
+
+  <Step title="Apply the causal mask">
+    During training, token at position `i` cannot see tokens at positions `> i`. Future positions are set to `−infinity` so their softmax output becomes exactly 0:
+
+    ```
+    For token 0 ("I"):    can only see position 0
+    For token 1 ("love"): can only see positions 0, 1
+    For token 2 ("dogs"): can only see positions 0, 1, 2
+    ```
+  </Step>
+
+  <Step title="Softmax → attention weights">
+    Convert scaled scores to a probability distribution summing to 1:
+
+    ```
+    softmax([0.297, -0.106, -0.368]) = [0.53, 0.35, 0.12]
+    ```
+
+    When processing `"dogs"`, the model pays 53% attention to `"I"`, 35% to `"love"`, and 12% to `"dogs"` itself.
+  </Step>
+
+  <Step title="Weighted sum of values">
+    Multiply each token's Value vector by its attention weight and sum:
+
+    ```
+    New("dogs") = 0.53 × V("I") + 0.35 × V("love") + 0.12 × V("dogs")
+
+                = 0.53 × [ 0.4,  0.9] + 0.35 × [-0.3,  0.2] + 0.12 × [ 0.7, -0.1]
+                = [0.212, 0.477]      + [-0.105, 0.070]      + [0.084, -0.012]
+                = [0.191, 0.535]
+    ```
+
+    This new vector `[0.191, 0.535]` is the context-aware representation of `"dogs"` — it now contains information from `"I"` and `"love"`, weighted by relevance.
+  </Step>
+
+  <Step title="Repeat for all tokens">
+    The complete attention weight matrix for the 3-token sequence forms a lower-triangular pattern where each row sums to 1.0:
+
+    ```
+             │ "I"    "love"  "dogs"
+    ─────────┼──────────────────────
+    "I"      │ 1.00   0.00    0.00
+    "love"   │ 0.45   0.55    0.00
+    "dogs"   │ 0.53   0.35    0.12
+    ```
+
+    Every token builds its representation from itself and all tokens before it.
+  </Step>
+
+  <Step title="Merge heads and project output">
+    After computing all head outputs in parallel, concatenate them back to `d_model` and pass through a final linear projection. This output projection mixes information across heads, letting each head's discoveries influence the combined representation.
+  </Step>
+</Steps>
+
+## The causal mask: why it's needed
+
+During training, you show the model the sentence `"The cat sat on the mat"`. The model's job at position 3 (`"on"`) is to predict `"the"`. But if position 3 can attend to position 5 (`"mat"`), the model sees the answer before it makes the prediction — it cheats.
+
+The solution is a **lower-triangular mask**: set the upper triangle of the attention score matrix to `−infinity`. After softmax, those positions become exactly 0.0.
+
+```python
+# Before mask:
+attn_scores = [[0.3,  0.5,  0.2, -0.1, -0.4],
+               [0.1,  0.4, -0.3,  0.6, -0.2],
+               ...]
+
+# Apply mask (upper triangle = -inf):
+attn_scores = [[0.3, -inf, -inf, -inf, -inf],   # pos 0: only sees itself
+               [0.1,  0.4, -inf, -inf, -inf],   # pos 1: sees 0, 1
+               [0.5, -0.2,  0.3, -inf, -inf],   # pos 2: sees 0, 1, 2
+               ...]
+
+# After softmax:
+attn_weights = [[1.0,  0.0,  0.0,  0.0,  0.0],
+                [0.43, 0.57, 0.0,  0.0,  0.0],
+                [0.42, 0.21, 0.37, 0.0,  0.0],
+                ...]
+```
+
+<Tip>
+  During text generation at inference time, causal masking is implicitly maintained — you generate tokens one at a time, so future tokens simply don't exist yet. The model only attends to previously generated tokens.
+</Tip>
+
+## Multi-head attention: why multiple heads?
+
+### The limitation of a single head
+
+With one attention head, the model averages all relationships into a single representation. But language has many simultaneous relationships:
+
+```text
+"The teacher gave the student a book because she was proud of him."
+
+Q: Who is "she"?       → teacher (gender agreement)
+Q: Who is "him"?       → student (gender agreement)
+Q: Who gave what?      → teacher → student → book (syntactic roles)
+```
+
+A single head must compress all three answers into one vector — messy, lossy, and confused.
+
+### Divide and conquer
+
+Instead, you run attention **multiple times in parallel**, each with its own `W_q`, `W_k`, `W_v`:
+
+```text
+Head 1 learns: subject-verb relationships → "teacher" ↔ "gave"
+Head 2 learns: pronoun resolution         → "she" ↔ "teacher"
+Head 3 learns: object relationships       → "student" ↔ "book"
+Head 4 learns: adjective-noun patterns    → "proud" ↔ "teacher"
+...
+Head 12: positional patterns, punctuation, etc.
+```
+
+Each head has dimension `d_model / num_heads`. For GPT-2 small: `768 / 12 = 64` dimensions per head.
+
+<Tip>
+  Research into trained GPT-2 models reveals consistent head specializations: early layers (1–3) capture local syntax and punctuation; middle layers (4–8) handle semantic relationships like subject-verb and entity tracking; late layers (9–12) manage high-level patterns like topic coherence and anaphora resolution. Some heads become highly specific — "duplicate token heads" copy the previous token, "inhibition heads" actively suppress attention to certain tokens, and "position heads" attend purely by distance.
+</Tip>
+
+## The annotated `MultiHeadAttention` code
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+
+class MultiHeadAttention(nn.Module):
+    """
+    WHAT: Multi-Head Self-Attention with RoPE and causal masking.
+
+    WHY: Transformers would be useless without attention. This is the
+         mechanism that lets each token "look at" every other token and
+         decide how much each matters for understanding the current context.
+
+         Each attention head:
+         1. Projects input into Query, Key, Value spaces
+         2. Computes Q·K^T / sqrt(d_k) → how well each query matches each key
+         3. Applies causal mask → no peeking at future tokens
+         4. Softmax → converts scores to a probability distribution
+         5. Weighted sum of Values → builds context-aware representation
+
+         Doing this with multiple heads in parallel lets each head
+         specialize in different linguistic patterns.
+    """
+
+    def __init__(self, d_model: int, num_heads: int, dropout: float = 0.1):
+        """
+        Args:
+            d_model:   Total embedding dimension (e.g., 768 for GPT-2 small)
+            num_heads: Number of parallel attention heads (e.g., 12)
+            dropout:   Probability of randomly zeroing attention weights
+
+        WHY: d_model must be divisible by num_heads because each head
+             operates on d_model/num_heads dimensions (64 for GPT-2 small).
+             This split-then-concat strategy lets heads specialize while
+             keeping total parameter count the same as a single large head.
+        """
+        super().__init__()
+
+        # WHAT: Validate that heads evenly divide the model dimension
+        assert d_model % num_heads == 0, (
+            f"d_model ({d_model}) must be divisible by num_heads ({num_heads}). "
+            f"This ensures each head has equal dimension."
+        )
+
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.head_dim = d_model // num_heads  # 768/12 = 64 dimensions per head
+                                               # WHY: 64 is the "sweet spot" —
+                                               # enough to capture meaning,
+                                               # small enough for efficient compute
+
+        # ===== QKV Projection =====
+        # WHAT: One big linear layer that projects input to Q, K, V simultaneously
+        # WHY:  3 separate Linear(768→768) layers = 3 matrix multiplies.
+        #       One combined Linear(768→2304) = 1 bigger matrix multiply.
+        #       On GPU, 1 big operation is much faster than 3 small ones
+        #       due to better parallelism and fewer kernel launches.
+        #       Shape: [d_model, 3 * d_model] = [768, 2304]
+        self.qkv_proj = nn.Linear(d_model, 3 * d_model, bias=False)
+
+        # ===== Output Projection =====
+        # WHAT: Project concatenated head outputs back to d_model
+        # WHY:  After concatenation: [batch, seq, d_model] but each head's
+        #       output was computed independently. This linear layer MIXES
+        #       information across heads, letting them communicate.
+        #       Without it, heads would stay isolated — like 12 experts
+        #       who never talk to each other.
+        self.out_proj = nn.Linear(d_model, d_model, bias=False)
+
+        # ===== RoPE (Rotary Position Embeddings) =====
+        # WHAT: Applies rotation-based position encoding to Q and K only
+        # WHY:  RoPE encodes position into the Q and K vectors so that
+        #       the dot product Q·K naturally depends on RELATIVE position.
+        #       V does NOT get RoPE because values carry content, not
+        #       position — position is only relevant for deciding
+        #       WHICH values to attend to, not the values themselves.
+        self.rotary = RotaryPositionalEmbedding(self.head_dim)
+
+        # ===== Dropout =====
+        self.attn_dropout = nn.Dropout(dropout)   # Applied to attention weights
+        self.resid_dropout = nn.Dropout(dropout)  # Applied to final output
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+        """
+        Input:  x    [batch, seq_len, d_model]  — token embeddings
+                mask [batch, 1, seq, seq]       — causal mask (1=visible, 0=masked)
+
+        Output:      [batch, seq_len, d_model]  — context-aware representations
+        """
+        batch_size, seq_len, _ = x.shape
+
+        # ===== STEP 1: Project input to Q, K, V — all at once =====
+        qkv = self.qkv_proj(x)               # [batch, seq, 3 * d_model]
+
+        # ===== STEP 2: Reshape to expose the head dimension =====
+        qkv = qkv.reshape(batch_size, seq_len, 3, self.num_heads, self.head_dim)
+        qkv = qkv.permute(2, 0, 3, 1, 4)    # [3, batch, heads, seq, head_dim]
+
+        q = qkv[0]  # Query:  [batch, heads, seq, head_dim]
+        k = qkv[1]  # Key:    [batch, heads, seq, head_dim]
+        v = qkv[2]  # Value:  [batch, heads, seq, head_dim]
+
+        # ===== STEP 3: Apply Rotary Position Embeddings =====
+        # WHY: After rotation, the dot product q_i · k_j depends on
+        #      cos(i-j) and sin(i-j) — the RELATIVE distance between tokens.
+        q = self.rotary(q, seq_len)
+        k = self.rotary(k, seq_len)
+
+        # ===== STEP 4: Compute attention scores (Q · K^T) =====
+        # Shape: [batch, heads, query_seq, key_seq]
+        # DIVIDE BY sqrt(head_dim): prevents variance explosion → gradient vanishing.
+        attn_scores = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+
+        # ===== STEP 5: Apply causal mask =====
+        # -infinity → e^(-inf) = 0.0 after softmax = zero attention
+        if mask is not None:
+            attn_scores = attn_scores.masked_fill(mask == 0, float('-inf'))
+
+        # ===== STEP 6: Softmax — scores become attention weights =====
+        attn_weights = F.softmax(attn_scores, dim=-1)
+        attn_weights = self.attn_dropout(attn_weights)
+
+        # ===== STEP 7: Weighted sum of values =====
+        attn_output = attn_weights @ v
+
+        # ===== STEP 8: Merge heads and project =====
+        attn_output = attn_output.transpose(1, 2).contiguous()
+        attn_output = attn_output.reshape(batch_size, seq_len, self.d_model)
+
+        output = self.out_proj(attn_output)   # Mix across heads
+        output = self.resid_dropout(output)   # Regularization
+
+        return output
+
+
+def create_causal_mask(seq_len: int, device: torch.device) -> torch.Tensor:
+    """
+    WHAT: Create a causal (lower triangular) attention mask.
+    WHY:  Prevents tokens from attending to future tokens during training.
+
+    Reshaped to [1, 1, seq_len, seq_len] for broadcasting over
+    batch and head dimensions.
+    """
+    mask = torch.tril(torch.ones(seq_len, seq_len, device=device))
+    return mask.view(1, 1, seq_len, seq_len)
+```
+
+## Attention variants
+
+| Variant | What it does | Used by |
+|---|---|---|
+| **Self-attention** | Q, K, V all from same input (this code) | All GPT models |
+| **Cross-attention** | Q from decoder, K/V from encoder | Original Transformer, T5 |
+| **Grouped query attention** | Fewer KV heads than Q heads | LLaMA 2 70B, Mistral |
+| **Multi-query attention** | Single KV head shared across all Q heads | PaLM, Gemini |
+| **Flash Attention** | Fused CUDA kernels for the same O(n²) math | Most production LLMs |
+| **Sliding window** | Attend only to the last W tokens | Mistral 7B |
+| **Sparse attention** | Combination of local and strided patterns | Longformer, BigBird |
+
+<Tip>
+  Flash Attention (Dao et al., 2022) doesn't change the mathematics — it produces identical results to standard attention. It simply reorganises memory access patterns and fuses GPU kernels to achieve a 2–4× speedup. Most modern LLMs use it in production.
+</Tip>

@@ -1,0 +1,84 @@
+---
+title: 'Next Steps: Experiments for Extending Your GPT Model'
+description: 'Concrete experiments to run after completing the guide, skills you have gained, and the key papers to read for going deeper into LLM research.'
+---
+
+You have built a 124-million-parameter language model from scratch — tokenizer, embeddings, attention, training loop, and inference engine. The architecture you implemented is the same family used by LLaMA 3, Mistral, and Qwen 2.5. The experiments below give you a clear path forward, from low-effort tuning to production-level optimizations.
+
+<Tip>
+  The best first experiments are **Bigger model** and **KV Cache** — they require the fewest external dependencies and teach the two most important lessons: how scale affects quality and how inference efficiency works in practice.
+</Tip>
+
+## Experiments
+
+Each experiment targets a specific part of the codebase and teaches a distinct concept. They are roughly ordered from easiest to hardest.
+
+<Columns cols={2}>
+  <Card title="Bigger model" icon="arrow-up">
+    Increase `num_layers` from 12 to 24 (or 32) and `d_model` from 768 to 1024. Observe how validation loss drops and reasoning quality improves with depth. This is the fastest way to see why scale matters — no new code required, just larger config values.
+  </Card>
+  <Card title="More data" icon="database">
+    Replace the default dataset with BookCorpus, C4, or The Pile. Larger and more diverse data almost always outperforms a bigger model trained on the same data. You will see the loss floor drop and the model generalize to new domains.
+  </Card>
+  <Card title="Flash Attention" icon="bolt">
+    Install `flash-attn` and swap the standard attention computation for a Flash Attention kernel. Flash Attention rewrites the attention computation to avoid materializing the full `seq_len × seq_len` attention matrix in HBM, achieving 2–5× faster training and enabling much longer context windows.
+  </Card>
+  <Card title="Grouped Query Attention" icon="users">
+    Set `num_kv_heads` to a value smaller than `num_heads` (e.g., 8 query heads but 2 KV heads). Each KV head is shared across multiple query heads. This is how Mistral achieves efficient inference: the KV cache shrinks proportionally to `num_kv_heads / num_heads`, reducing memory pressure during generation.
+  </Card>
+  <Card title="LoRA fine-tuning" icon="sliders">
+    Add low-rank adapter matrices to the Q and V projections of each attention block. Freeze all original weights and train only the adapters. LoRA lets you fine-tune the model on a new task or domain using a fraction of the compute and memory needed for full fine-tuning, without modifying the pretrained weights.
+  </Card>
+  <Card title="RLHF / DPO" icon="thumbs-up">
+    Train a reward model on human preference data, then use Proximal Policy Optimization (PPO) or Direct Preference Optimization (DPO) to align the language model's outputs with those preferences. This is the technique that turns a base language model into a chat assistant — the core of how ChatGPT learns to follow instructions.
+  </Card>
+  <Card title="KV cache" icon="server">
+    Implement persistent key-value storage during inference. On each new token, compute Q/K/V only for the new position and read all past K and V from cache. This eliminates redundant recomputation and reduces generation cost from quadratic to linear in sequence length, achieving roughly 500× faster text generation.
+  </Card>
+  <Card title="Mixture of Experts" icon="network">
+    Replace the dense FFN in each Transformer block with a set of expert FFNs and a learned router that sends each token to the top-2 experts. Only a fraction of parameters activate per token, so you can scale total parameter count far beyond what fits in GPU memory without increasing per-token compute. This is believed to be how GPT-4 scales to trillions of parameters.
+  </Card>
+</Columns>
+
+## Experiment reference table
+
+| Experiment | What to change | What you will learn |
+|---|---|---|
+| **Bigger model** | `num_layers` 12 → 24, `d_model` 768 → 1024 | How depth improves reasoning |
+| **More data** | Add BookCorpus, C4, The Pile | Impact of data quality and diversity |
+| **Flash Attention** | Install `flash-attn`, swap attention kernel | 2–5× faster training, longer context |
+| **Grouped Query Attention** | Set `num_kv_heads` < `num_heads` | How Mistral achieves efficient inference |
+| **LoRA fine-tuning** | Add low-rank adapter layers | Customize without full retraining |
+| **RLHF / DPO** | Add reward model training | How ChatGPT learns to follow instructions |
+| **KV Cache** | Implement persistent key-value storage | 500× faster text generation |
+| **Mixture of Experts** | Route tokens through different FFN experts | How GPT-4 scales to trillions of params |
+
+## Skills you have gained
+
+After completing this guide, you can do all of the following.
+
+<Check>Explain how GPT-4 tokenizes text using BPE</Check>
+<Check>Understand why RoPE, RMSNorm, and SwiGLU replaced older techniques</Check>
+<Check>Compute attention scores manually for a 3-token sentence</Check>
+<Check>Debug a Transformer training loop (loss spikes, flat lines, overfitting)</Check>
+<Check>Choose sampling parameters (temperature, top-k, top-p) for different use cases</Check>
+<Check>Understand why KV caching is critical for production inference</Check>
+<Check>Read modern ML papers with confidence — you will recognize every component</Check>
+
+## Suggested reading
+
+The papers below are referenced directly in this guide. Reading them in order will take you from foundational theory to the specific design choices in the model you built.
+
+<AccordionGroup>
+  <Accordion title="Attention Is All You Need — Vaswani et al., 2017">
+    The paper that introduced the Transformer architecture. It defines the encoder-decoder structure, multi-head attention, scaled dot-product attention, positional encoding, and the feed-forward sublayer. The decoder-only model you built descends directly from this work. Reading it gives you the vocabulary used in every subsequent architecture paper.
+  </Accordion>
+
+  <Accordion title="LLaMA: Open and Efficient Foundation Language Models — Touvron et al., 2023">
+    The paper that introduced the specific combination of techniques this guide implements: RoPE position encoding, RMSNorm normalization, SwiGLU activation, and pre-norm residual connections. LLaMA demonstrated that a carefully chosen architecture trained on high-quality data outperforms larger models trained carelessly. The architecture provenance table in the Glossary traces most of the modern choices back to this paper.
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  GPT-4 and Claude architecture details are proprietary. This guide teaches the best **publicly-confirmed** architecture — what LLaMA 3, Mistral, and Qwen 2.5 use. Every model in the LLM landscape is built on the same Transformer foundation described in "Attention Is All You Need", so the knowledge you have gained applies universally.
+</Note>

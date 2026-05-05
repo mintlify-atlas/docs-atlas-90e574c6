@@ -1,0 +1,411 @@
+---
+title: "The Complete GPT Model: Putting All the Parts Together"
+description: "See how token embeddings, stacked Transformer blocks, weight tying, and a language modelling head combine into a working 124M-parameter GPT."
+---
+
+After building attention, normalisation, and feed-forward components separately, you are ready to assemble them into a complete language model. The architecture described here — a decoder-only Transformer — is essentially the same family as GPT-2, LLaMA 3, Mistral, and Qwen 2.5. The differences between those models are mostly scale (more layers, wider dimensions) and a few training choices. At 124M parameters, this model is sized identically to GPT-2 small and is small enough to train on a single consumer GPU.
+
+## GPTConfig: your model recipe
+
+All hyperparameters live in a single dataclass. Changing model size is one line — you never need to hunt through code.
+
+```python
+from dataclasses import dataclass
+
+
+@dataclass
+class GPTConfig:
+    """
+    WHAT: All hyperparameters in one place.
+    WHY: Changing model size is one line. No hunting through code.
+    """
+    # ===== Architecture =====
+    vocab_size: int = 50257        # WHAT: 50,257 unique tokens in GPT-2 vocabulary
+    d_model: int = 768             # WHAT: Each token becomes a 768-dim vector
+                                   # WHY: Bigger = more nuanced meanings, more compute
+    num_heads: int = 12            # WHAT: 12 attention heads (12 × 64 = 768)
+    num_layers: int = 12           # WHAT: 12 transformer blocks stacked
+                                   # WHY: Deeper = better reasoning, harder to train
+    max_seq_len: int = 1024        # WHAT: Max tokens model can process at once
+
+    # ===== Regularization (prevent overfitting) =====
+    dropout: float = 0.1           # WHAT: Randomly disable 10% of neurons during training
+    embd_dropout: float = 0.1      # WHAT: Dropout applied right after embedding lookup
+
+    # ===== Training =====
+    learning_rate: float = 3e-4    # WHAT: Step size for weight updates
+    weight_decay: float = 0.1      # WHAT: Penalize large weights (L2 regularization)
+    warmup_steps: int = 2000       # WHAT: Gradually increase LR for first 2000 steps
+    max_steps: int = 100000        # WHAT: Total training iterations
+    batch_size: int = 8            # WHAT: Sequences processed per GPU step
+    grad_accum_steps: int = 4      # WHAT: Accumulate gradient steps (effective batch = 8×4 = 32)
+    betas: tuple = (0.9, 0.95)    # WHAT: AdamW momentum coefficients
+    eps: float = 1e-8              # WHAT: Small constant preventing division by zero
+
+    def __post_init__(self):
+        """Validate configuration consistency."""
+        assert self.d_model % self.num_heads == 0, (
+            f"d_model ({self.d_model}) must be divisible by "
+            f"num_heads ({self.num_heads})"
+        )
+```
+
+### Architecture hyperparameters
+
+<ParamField path="body.vocab_size" type="int" default="50257">
+  Number of unique tokens in the vocabulary. GPT-2's BPE tokenizer produces 50,257 tokens. Increasing this allows richer vocabulary coverage but adds parameters to the embedding table and LM head.
+</ParamField>
+
+<ParamField path="body.d_model" type="int" default="768">
+  Dimensionality of every token's embedding vector and the width of all intermediate representations. Larger values give the model more capacity to represent nuanced meanings but increase compute quadratically in some operations. GPT-2 small uses 768; GPT-3 uses 12,288.
+</ParamField>
+
+<ParamField path="body.num_heads" type="int" default="12">
+  Number of parallel attention heads. Must divide `d_model` evenly. Each head operates on `d_model / num_heads` dimensions (64 for this config). More heads allow finer-grained specialisation across linguistic patterns.
+</ParamField>
+
+<ParamField path="body.num_layers" type="int" default="12">
+  Number of Transformer blocks stacked in sequence. Depth is the primary driver of a model's reasoning capability. GPT-2 small uses 12 layers; GPT-3 uses 96.
+</ParamField>
+
+<ParamField path="body.max_seq_len" type="int" default="1024">
+  Maximum number of tokens the model can process in a single forward pass. Determines the size of the causal attention mask and the context window available during generation.
+</ParamField>
+
+<ParamField path="body.dropout" type="float" default="0.1">
+  Probability of randomly zeroing neuron activations during training. Applied inside attention and after the FFN. Prevents the model from over-relying on any single path through the network.
+</ParamField>
+
+<ParamField path="body.embd_dropout" type="float" default="0.1">
+  Dropout applied immediately after the token embedding lookup, before the first Transformer block. Helps prevent overfitting to specific embedding values early in training.
+</ParamField>
+
+### Training hyperparameters
+
+<ParamField path="body.learning_rate" type="float" default="3e-4">
+  Step size for weight updates. Combined with a warmup schedule and cosine decay. Too high causes divergence; too low causes slow convergence or getting stuck in local minima.
+</ParamField>
+
+<ParamField path="body.weight_decay" type="float" default="0.1">
+  L2 regularisation coefficient for AdamW. Penalises large weight magnitudes, encouraging the model to spread information across many parameters rather than memorising with a few large weights.
+</ParamField>
+
+<ParamField path="body.warmup_steps" type="int" default="2000">
+  Number of steps over which the learning rate is linearly increased from 0 to `learning_rate`. Warmup prevents large, destabilising updates at the start of training when all weights are random.
+</ParamField>
+
+<ParamField path="body.batch_size" type="int" default="8">
+  Number of sequences processed per GPU step. Multiplied by `grad_accum_steps` to get the effective batch size (8 × 4 = 32 in this config). Larger effective batches produce more stable gradient estimates.
+</ParamField>
+
+<ParamField path="body.grad_accum_steps" type="int" default="4">
+  Number of forward/backward passes to accumulate before updating weights. Simulates a larger batch size on hardware with limited GPU memory. Effective batch = `batch_size × grad_accum_steps`.
+</ParamField>
+
+## The complete model structure
+
+The GPT model connects five components in sequence:
+
+1. **Token embedding** — converts integer token IDs into `d_model`-dimensional vectors
+2. **Embedding dropout** — regularisation applied immediately after embedding lookup
+3. **N Transformer blocks** — the core stack; each block is attention + FFN with pre-norm and residuals
+4. **Final RMSNorm** — normalises the last block's output before projection
+5. **LM head** — a linear projection from `d_model` to `vocab_size`, producing one score per possible next token
+
+## Weight tying: saving 30% of parameters
+
+<Note>
+  **What weight tying is:** The token embedding table and the LM head share the exact same weight matrix. This is not an approximation — `self.token_embedding.weight = self.lm_head.weight` makes them point to the same tensor in memory.
+
+  **Why it works:** The embedding maps a token ID → a dense vector (decode an integer into meaning). The LM head maps a dense vector → token scores (encode meaning back into a distribution over tokens). These are inverse operations that naturally benefit from using the same semantic space.
+
+  **Three concrete benefits:**
+  1. **Parameter efficiency:** saves `50257 × 768 = 38.6M` parameters — about 30% of GPT-2 small's total
+  2. **Better regularisation:** the shared matrix receives gradient signals from both the embedding loss and the prediction loss, improving the quality of token representations
+  3. **Theoretical elegance:** input tokens and output tokens live in the same semantic space, so the dot product between a context vector and an embedding vector is a meaningful similarity score
+
+  **How PyTorch handles it:** setting `self.token_embedding.weight = self.lm_head.weight` assigns the same `nn.Parameter` tensor to both. During the backward pass, gradients from both directions accumulate into that single tensor automatically.
+</Note>
+
+## The forward pass: token IDs to logits
+
+The forward pass transforms a batch of integer token sequences into a tensor of prediction scores:
+
+```text
+Input:  [batch_size, seq_len]             — integer token IDs
+Output: [batch_size, seq_len, vocab_size] — raw logit scores
+```
+
+The shift-by-one trick aligns inputs with targets during training:
+
+```text
+Input:  [The,  cat,  sat,  on,   the,  mat]
+         ↓     ↓     ↓     ↓     ↓     ↓
+Target: [cat,  sat,  on,   the,  mat,  ?]
+Predict: P(cat|The) P(sat|The,cat) ... P(mat|The,cat,sat,on,the)
+```
+
+You slice `logits[:, :-1, :]` (drop the last prediction) and `targets[:, 1:]` (drop the first token) to align each prediction with the token it must predict.
+
+## What logits represent
+
+The LM head transforms each token's 768-dimensional "understanding" into a 50,257-dimensional vector of raw scores — one per vocabulary token. These unnormalised scores are called **logits**.
+
+```python
+# After forward pass, logits have shape [batch=1, seq=6, vocab=50257]:
+logits[0, 5, :]  # Predictions for position 5 (predicting token 6)
+# = array of 50257 numbers like:
+# [0.1, -0.3, 0.7, ..., 9.2, ..., -2.1]
+#  ^^^^  ^^^^  ^^^^       ^^^^       ^^^^
+#  "the" "a"   "an"       "mat"      "xyzzy"
+
+# After softmax: probabilities summing to 1.0
+probs = softmax(logits[0, 5, :])
+# [0.0001, 0.0001, 0.0003, ..., 0.45, ..., 0.0000]
+#                              ^^^^
+#                          "mat" has 45% probability
+
+# Model's top predictions for position 5:
+top5_indices = torch.topk(logits[0, 5, :], 5).indices
+# → [2603, 4521, 1234, 8901, 345]  (token IDs)
+# → ["mat", "rug", "floor", "table", "chair"]
+```
+
+A higher logit means the model assigns more probability to that token being next. During training, cross-entropy loss penalises the model for assigning low logits to the correct token. During generation, you sample from the softmax distribution over logits (optionally filtered by temperature, top-k, or top-p).
+
+## The annotated `GPT` class
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class GPT(nn.Module):
+    """
+    WHAT: A complete decoder-only Transformer language model.
+    WHY: This single class combines everything we've built:
+         embedding → N× transformer blocks → output projection.
+
+         "Decoder-only" means it generates text left-to-right
+         (causal/autoregressive), without an encoder that would
+         look at the full sequence.
+
+         This is the same architecture family as:
+         GPT-2 (12 layers, 768 dims), GPT-3 (96 layers, 12288 dims),
+         LLaMA 3 (32-80 layers), Mistral (32 layers)
+    """
+
+    def __init__(self, config: GPTConfig):
+        super().__init__()
+        self.config = config
+
+        # ===== 1. TOKEN EMBEDDING =====
+        # WHAT: Lookup table: token ID → dense vector
+        # WHY: Converts integers (IDs) into the continuous vectors
+        #      that neural networks can work with.
+        #      Shape: [50257, 768] — one row per vocabulary token
+        self.token_embedding = nn.Embedding(config.vocab_size, config.d_model)
+
+        self.embd_dropout = nn.Dropout(config.embd_dropout)
+
+        # ===== 2. TRANSFORMER BLOCKS =====
+        # WHAT: Stack of N identical transformer layers
+        # WHY: nn.ModuleList registers each block so PyTorch tracks
+        #      their parameters for training. A regular Python list
+        #      would NOT be tracked!
+        self.layers = nn.ModuleList([
+            TransformerBlock(
+                d_model=config.d_model,
+                num_heads=config.num_heads,
+                dropout=config.dropout
+            )
+            for _ in range(config.num_layers)
+        ])
+
+        # ===== 3. FINAL NORMALIZATION =====
+        # WHAT: One last RMSNorm before the output head
+        # WHY: The output of the last transformer block is raw (unnormalized).
+        #      We normalize before projecting to vocabulary so the
+        #      LM head gets clean, well-scaled inputs.
+        self.final_norm = RMSNorm(config.d_model)
+
+        # ===== 4. LM HEAD (output projection) =====
+        # WHAT: Linear projection: d_model → vocab_size
+        # WHY: Transforms each token's 768-dim "understanding"
+        #      into a 50257-dim vector of scores — one score per
+        #      possible next token.
+        self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
+
+        # ===== 5. WEIGHT TYING =====
+        # WHAT: Share weight matrix between embedding and LM head
+        # WHY: The embedding maps token → vector. The LM head maps
+        #      vector → token. These are INVERSE operations!
+        #
+        #      Saves 50257×768 = 38.6M params (30% of GPT-2 small).
+        #      Shared matrix gets gradients from both directions.
+        self.token_embedding.weight = self.lm_head.weight
+
+        # ===== 6. WEIGHT INITIALIZATION =====
+        # WHY: 0.02 std gives values mostly in [-0.04, 0.04],
+        #      the sweet spot for Transformers — not too small
+        #      (gradients vanish) and not too large (activations saturate).
+        self.apply(self._init_weights)
+        print(f"GPT initialized with {self.get_num_params():,} parameters")
+
+    def _init_weights(self, module: nn.Module):
+        """Initialize weights using the GPT-2 scheme."""
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def get_num_params(self) -> int:
+        """Count total trainable parameters (weights + biases)."""
+        return sum(p.numel() for p in self.parameters())
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        targets: torch.Tensor = None
+    ) -> tuple:
+        """
+        WHAT: Process a batch of token sequences through the GPT model.
+
+        Args:
+            input_ids: [batch_size, seq_len] — token IDs for each sequence
+            targets:   [batch_size, seq_len] — same tokens, used for loss
+
+        Returns:
+            logits: [batch, seq_len, vocab_size] — raw prediction scores
+            loss:   scalar — cross-entropy (None if targets not provided)
+        """
+        batch_size, seq_len = input_ids.shape
+
+        # ===== 1. EMBED TOKENS =====
+        x = self.token_embedding(input_ids)   # [batch, seq, d_model]
+        x = self.embd_dropout(x)
+
+        # ===== 2. CREATE CAUSAL MASK =====
+        mask = create_causal_mask(seq_len, input_ids.device)
+
+        # ===== 3. TRANSFORMER LAYERS =====
+        # Early layers capture syntax. Later layers capture semantics.
+        for layer in self.layers:
+            x = layer(x, mask)
+
+        # ===== 4. FINAL NORMALIZATION =====
+        x = self.final_norm(x)
+
+        # ===== 5. PROJECT TO VOCABULARY =====
+        logits = self.lm_head(x)  # [batch, seq_len, vocab_size]
+
+        # ===== 6. COMPUTE LOSS (training only) =====
+        loss = None
+        if targets is not None:
+            # Align predictions with targets using shift-by-one
+            logits_flat = logits[:, :-1, :].contiguous().view(
+                -1, self.config.vocab_size
+            )  # [batch*(seq-1), vocab_size]
+            targets_flat = targets[:, 1:].contiguous().view(-1)  # [batch*(seq-1)]
+
+            loss = F.cross_entropy(logits_flat, targets_flat)
+
+        return logits, loss
+
+    @torch.no_grad()
+    def generate(
+        self,
+        input_ids: torch.Tensor,
+        max_new_tokens: int,
+        temperature: float = 1.0,
+        top_k: int = None,
+        top_p: float = None,
+    ) -> torch.Tensor:
+        """
+        WHAT: Generate new text token by token (autoregressive).
+
+        @torch.no_grad() disables the computation graph during inference,
+        saving ~50% GPU memory and making generation ~2x faster.
+
+        Sampling parameters:
+            temperature: < 1.0 = focused, = 1.0 = natural, > 1.0 = creative
+            top_k: sample from the K most likely tokens only
+            top_p: nucleus sampling — keep smallest set with cumulative prob ≥ top_p
+        """
+        self.eval()
+
+        for _ in range(max_new_tokens):
+            # Crop if sequence exceeds max_seq_len
+            if input_ids.shape[1] > self.config.max_seq_len:
+                input_ids = input_ids[:, -self.config.max_seq_len:]
+
+            logits, _ = self.forward(input_ids)
+            logits = logits[:, -1, :]  # [batch, vocab_size] — only last position
+
+            logits = logits / temperature
+
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, -1:]] = float('-inf')
+
+            if top_p is not None:
+                sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+                cumulative_probs = torch.cumsum(
+                    F.softmax(sorted_logits, dim=-1), dim=-1
+                )
+                sorted_indices_to_remove = cumulative_probs > top_p
+                sorted_indices_to_remove[:, 1:] = (
+                    sorted_indices_to_remove[:, :-1].clone()
+                )
+                sorted_indices_to_remove[:, 0] = False
+                indices_to_remove = sorted_indices_to_remove.scatter(
+                    1, sorted_indices, sorted_indices_to_remove
+                )
+                logits[indices_to_remove] = float('-inf')
+
+            probs = F.softmax(logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            input_ids = torch.cat([input_ids, next_token], dim=1)
+
+        return input_ids
+```
+
+## Parameter count breakdown
+
+The 124M-parameter count for GPT-2 small comes from:
+
+| Component | Calculation | Parameters |
+|---|---|---|
+| Token embedding | `50257 × 768` | 38.6M |
+| Per block: QKV projection | `768 × 2304` (= `768 × 3 × 768`) | 1.77M |
+| Per block: output projection | `768 × 768` | 589K |
+| Per block: SwiGLU `w1` | `768 × 3072` | 2.36M |
+| Per block: SwiGLU `w2` | `768 × 3072` | 2.36M |
+| Per block: SwiGLU `w3` | `3072 × 768` | 2.36M |
+| Per block: RMSNorm × 2 | `768 × 2` | 1.5K |
+| × 12 blocks | sum of per-block params × 12 | ~110M |
+| Final RMSNorm | `768` | 768 |
+| LM head | shared with embedding (weight tying) | 0 extra |
+| **Total** | | **~124M** |
+
+<Note>
+  Because of weight tying, the LM head adds zero additional parameters. Without weight tying, the model would need another `50257 × 768 = 38.6M` parameters — roughly 30% more than its current total. This is why weight tying is standard practice in GPT-style models.
+</Note>
+
+## PyTorch parameter types
+
+A common source of confusion is how PyTorch tracks different kinds of state inside a module:
+
+| Type | Created by | Tracked by optimizer? | Saved in `state_dict`? | Moved by `.to(device)`? |
+|---|---|---|---|---|
+| `nn.Parameter` | `nn.Parameter(tensor)` | Yes | Yes | Yes |
+| `register_buffer` | `self.register_buffer("name", t)` | No | Yes | Yes |
+| Regular attribute | `self.x = tensor` | No | No | No |
+
+The GPT model uses:
+- **`nn.Parameter`**: all weights (`nn.Linear` and `nn.Embedding` create these automatically)
+- **`register_buffer`**: RoPE's cos/sin caches — not learned, but must move to GPU with the model
+- **Regular attribute**: the `config` object — not a tensor, does not need GPU placement

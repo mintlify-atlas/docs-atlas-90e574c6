@@ -1,133 +1,95 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
-icon: 'star'
+title: "How to Train Your GPT: Build an LLM from Scratch Today"
+description: "A 12-chapter interactive textbook that teaches you to build a modern LLaMA-style language model from scratch — every line annotated, explained like you're five."
 ---
 
-## Setting up
+**How to Train Your GPT** is a 12-chapter, 3,671-line interactive textbook that walks you through building a complete large language model from the ground up. You'll write every component yourself — tokenizer, embeddings, attention, training loop, and inference engine — with every single line annotated to explain what it does and why it's there.
 
-Get your documentation site up and running in minutes.
+You don't need any machine learning experience. If you know basic Python, you have everything you need to start.
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Introduction" icon="book-open" href="/introduction">
+    Understand the big picture: what a GPT is, what you'll build, and why this approach works.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Set up your environment and run your first training script in minutes.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Core Concepts" icon="brain" href="/concepts/tokenization">
+    Learn tokenization, embeddings, and positional encoding — the building blocks of every LLM.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Attention Mechanism" icon="eye" href="/architecture/attention">
+    Master the heart of the Transformer: multi-head self-attention with a full 8-step walkthrough.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What you'll build
 
-Everything you need to create world-class documentation.
+By the end of this guide you'll have built a working 124M-parameter language model using the same architectural techniques as LLaMA 3, Mistral, and Qwen — including RoPE, RMSNorm, SwiGLU, and mixed-precision training.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
+<CardGroup cols={2}>
+  <Card title="Foundations" icon="layer-group" href="/concepts/tokenization">
+    BPE tokenization, learned embeddings, and rotary positional encoding.
   </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
+  <Card title="Core Architecture" icon="microchip" href="/architecture/attention">
+    Multi-head attention, transformer blocks, and the complete GPT model.
   </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
+  <Card title="Training Pipeline" icon="chart-line" href="/training/pipeline">
+    Cross-entropy loss, AdamW optimizer, cosine warmup, and mixed precision.
   </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
+  <Card title="Inference Engine" icon="play" href="/training/inference">
+    KV cache, temperature sampling, top-k/p filtering, and beam search.
   </Card>
-</Columns>
+</CardGroup>
 
-## Make your content agent ready
+## How each chapter works
 
-Make your docs work for humans and AI agents alike.
+Every chapter follows the same four-step structure so you always know where you are:
 
-<Columns cols={2}>
-  <Card
-    title="Prompt component"
-    icon="robot"
-    href="/agent-ready/prompt"
-  >
-    Embed shareable AI prompts readers can copy or open in Cursor.
-  </Card>
-  <Card
-    title="Visibility"
-    icon="eye"
-    href="/agent-ready/visibility"
-  >
-    Show different content to humans and agents reading your docs.
-  </Card>
-  <Card
-    title="Contextual menu"
-    icon="bolt"
-    href="/agent-ready/contextual"
-  >
-    Give readers one-click access to Claude, ChatGPT, Cursor, and more.
-  </Card>
-  <Card
-    title="AI coding tools"
-    icon="wand-magic-sparkles"
-    href="/ai-tools/claude-code"
-  >
-    Set up Claude Code, Cursor, or Windsurf with Mintlify's skill.
-  </Card>
-</Columns>
+<Steps>
+  <Step title="Analogy">
+    A plain-English, 5-year-old-level explanation to build intuition before any math.
+  </Step>
+  <Step title="Worked example">
+    Real numbers traced through the computation so you see exactly what happens.
+  </Step>
+  <Step title="Annotated code">
+    Every line of Python includes a `WHAT` comment and a `WHY` comment.
+  </Step>
+  <Step title="Diagram">
+    A Mermaid flowchart or ASCII visualization of the data flow.
+  </Step>
+</Steps>
 
-## Need inspiration?
+## Architecture highlights
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+This guide implements a **modern decoder-only Transformer** — not the 2019 GPT-2 style, but the techniques used by LLaMA 3, Mistral, and Qwen 2.5 in production today.
+
+| Technique | Why it matters |
+|---|---|
+| **RoPE** | Relative position encoding without learned parameters |
+| **RMSNorm** | ~15% faster than LayerNorm, equally effective |
+| **SwiGLU** | Learns which information to pass or block at scale |
+| **Pre-Norm** | Stable training at 100+ layers |
+| **AdamW** | Better generalization than vanilla Adam |
+| **Mixed precision** | 2× speed, half memory, same quality |
+
+<Note>
+  GPT-4 and Claude architectures are proprietary. This guide teaches the best publicly-confirmed architecture: what LLaMA 3, Mistral, and Qwen 2.5 actually use.
+</Note>
+
+## Reference
+
+<CardGroup cols={2}>
+  <Card title="Glossary" icon="list" href="/reference/glossary">
+    Parameter breakdown, architecture diagram, and provenance table for every technique.
+  </Card>
+  <Card title="Architecture techniques" icon="table" href="/reference/architecture-techniques">
+    Side-by-side comparison of old vs. modern techniques with explanations.
+  </Card>
+  <Card title="Next steps" icon="arrow-right" href="/reference/next-steps">
+    Experiments to try after finishing: Flash Attention, GQA, LoRA, RLHF, and more.
+  </Card>
+  <Card title="Full script" icon="file-code" href="/training/full-script">
+    The complete runnable main.py that trains your GPT end-to-end.
+  </Card>
+</CardGroup>

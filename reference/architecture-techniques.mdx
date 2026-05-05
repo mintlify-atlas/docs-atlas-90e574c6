@@ -1,0 +1,102 @@
+---
+title: 'Modern LLM Architecture Techniques Reference Guide'
+description: 'Side-by-side comparison of old and modern LLM design choices, architecture provenance by model, and deeper explanations of each technique.'
+---
+
+Every design decision in the model you build in this guide was made for a concrete reason. This page documents all eleven technique choices — what replaced what, which model introduced each change, and why the modern choice is better than its predecessor.
+
+## Techniques comparison
+
+The table below maps each design dimension to its old form, its modern form, and the payoff from upgrading.
+
+| Technique | Old way | Modern way | Why better |
+|---|---|---|---|
+| **Position encoding** | Learned (GPT-2) or Sinusoidal | **RoPE** (LLaMA, Mistral) | Relative positions, any context length |
+| **Normalization** | LayerNorm | **RMSNorm** (LLaMA) | ~15% faster, equally effective |
+| **Activation** | ReLU or GELU | **SwiGLU** (PaLM, LLaMA) | Better performance at scale |
+| **Norm position** | Post-norm (after sublayer) | **Pre-norm** (GPT-3, LLaMA) | Much more stable training |
+| **Optimizer** | SGD or Adam | **AdamW** (decoupled decay) | Better generalization |
+| **LR schedule** | Constant or step | **Cosine with warmup** | Smoother convergence |
+| **Precision** | Float32 | **bfloat16 mixed** | 2× faster, half the memory |
+| **Gradient clipping** | None or ad-hoc | **Max norm 1.0** | Prevents gradient explosion |
+| **Weight init** | Xavier uniform | **Normal(0, 0.02)** | GPT-family standard |
+| **Weight tying** | Separate embed & output | **Shared weights** | Fewer parameters, more signal |
+| **Training objective** | Masked LM (BERT) | **Next-token prediction** | Enables text generation |
+
+## Architecture provenance
+
+Which model introduced each technique, and how confident we are that modern closed models use it too.
+
+| Technique | GPT-2 (2019) | GPT-3 (2020) | LLaMA (2023) | LLaMA 3 / Mistral / Qwen 2.5 (2024–25) | GPT-4 / Claude |
+|---|---|---|---|---|---|
+| Decoder-only | Yes | Yes | Yes | Yes | Likely |
+| Learned position | Yes | Yes | No | No | Unknown |
+| **RoPE** | No | No | Yes | Yes | Unknown |
+| LayerNorm | Yes | Yes | No | No | Unknown |
+| **RMSNorm** | No | No | Yes | Yes | Unknown |
+| GELU | Yes | Yes | No | No | Unknown |
+| **SwiGLU** | No | No | Yes | Yes | Unknown |
+| Pre-norm | No | Yes | Yes | Yes | Likely |
+| Weight tying | Yes | Likely | Yes | Yes | Unknown |
+| AdamW | No | Yes | Yes | Yes | Likely |
+
+<Note>
+  This guide teaches the **LLaMA 3 / Mistral / Qwen 2.5 architecture** — the state of the art that is publicly documented. GPT-4 and Claude may use similar or different techniques; the details are not public. Every model in the table above is built on the same Transformer foundation, so understanding this architecture means you understand the core principles behind all modern LLMs.
+</Note>
+
+## Technique deep dives
+
+<AccordionGroup>
+  <Accordion title="RoPE vs Sinusoidal vs Learned position encoding">
+    **Learned position encoding** (GPT-2) adds a trained vector for each absolute position. It works well but cannot generalize beyond the sequence lengths seen during training — position 1025 has no learned vector if you only trained up to 1024.
+
+    **Sinusoidal position encoding** (original Transformer) adds fixed sine/cosine waves of different frequencies. It does not require learning, but attention scores still depend on absolute positions rather than relative distances.
+
+    **RoPE** (Rotary Position Embedding, used by LLaMA, Mistral, Qwen) injects position by rotating Query and Key vectors before the dot product. Crucially, the rotation is designed so that the dot product `Q_m · K_n` depends only on the *relative* offset `m − n`. This means the model naturally generalizes to longer contexts and handles any sequence length without retraining. RoPE adds zero parameters to the model.
+  </Accordion>
+
+  <Accordion title="RMSNorm vs LayerNorm">
+    **LayerNorm** computes the mean and variance of a hidden state vector, subtracts the mean (re-centering), divides by the standard deviation (re-scaling), then applies learned scale (`γ`) and bias (`β`) parameters.
+
+    **RMSNorm** skips the mean-subtraction step entirely. It divides only by the root mean square of the activations, then applies learned scale `γ` (no bias). The re-centering step turns out to be largely unnecessary — the residual connections already keep activations centered — so RMSNorm is approximately 15% faster with no measurable quality loss. LLaMA, Mistral, and Gemma all use RMSNorm.
+  </Accordion>
+
+  <Accordion title="SwiGLU vs ReLU vs GELU">
+    **ReLU** (Rectified Linear Unit) zeros out all negative activations: `max(0, x)`. Simple and fast, but "dead neurons" (permanently zero outputs) can be a problem.
+
+    **GELU** (Gaussian Error Linear Unit, used by GPT-2/3) is a smooth approximation of ReLU that allows small negative values, which reduces the dead-neuron problem and improves gradient flow.
+
+    **SwiGLU** (used by PaLM, LLaMA, Gemini) uses a gating mechanism: one linear projection passes through SiLU (a smooth version of ReLU), and a second projection acts as a learned gate multiplied element-wise with the first. The gate learns to suppress or amplify different features dynamically. SwiGLU requires three weight matrices instead of two but consistently outperforms GELU at large scale. The third matrix (`w3`) adds parameters but the expansion ratio is kept at 4× to maintain the same total parameter count as a standard two-matrix FFN.
+  </Accordion>
+
+  <Accordion title="Pre-norm vs Post-norm">
+    In the original Transformer ("Attention Is All You Need"), normalization is applied **after** the sublayer and residual addition: `x = LayerNorm(x + sublayer(x))`. This is post-norm. The problem is that the residual branch passes through the normalization layer, which can destabilize training at depth — many GPT-2–style models require careful learning rate tuning and long warm-up schedules to stay stable.
+
+    **Pre-norm** applies normalization **before** the sublayer: `x = x + sublayer(LayerNorm(x))`. The residual path carries the raw, unnormalized activations directly from block to block, giving gradients a clean highway back to the earliest layers. Pre-norm is why GPT-3 and all subsequent models can train at hundreds of layers without the instability issues that plagued earlier architectures.
+  </Accordion>
+
+  <Accordion title="AdamW vs Adam vs SGD">
+    **SGD** (Stochastic Gradient Descent) updates weights by subtracting a fixed learning-rate multiple of the gradient. It is simple but slow to converge on the loss surfaces of large neural networks.
+
+    **Adam** adds two improvements: a first-moment estimate (running average of gradients, giving momentum) and a second-moment estimate (running average of squared gradients, giving per-parameter adaptive learning rates). Adam converges much faster than SGD, but its L2 weight-decay implementation is flawed — the adaptive scaling absorbs the decay term, making it ineffective.
+
+    **AdamW** fixes this by applying weight decay **directly** to the weights rather than routing it through the gradient. The result is proper regularization: weights shrink each step independently of the gradient magnitude. This improves generalization and is now the standard optimizer for all large language models.
+  </Accordion>
+</AccordionGroup>
+
+## Techniques by component
+
+<Columns cols={2}>
+  <Card title="Attention block" icon="eye">
+    **RoPE** for position encoding. **Multi-head attention** with causal mask. QKV fused into a single `3 × d_model × d_model` projection. Output projected back with a `d_model × d_model` matrix. Pre-norm with **RMSNorm** applied before the sublayer.
+  </Card>
+  <Card title="Feed-forward block" icon="bolt">
+    **SwiGLU** activation with three weight matrices: `w1` (768 → 3072), `w2` (768 → 3072, gate), and `w3` (3072 → 768). Pre-norm with **RMSNorm** applied before the sublayer. Residual connection bypasses the entire FFN.
+  </Card>
+  <Card title="Optimizer and schedule" icon="sliders">
+    **AdamW** with decoupled weight decay (`β1=0.9`, `β2=0.95`). **Cosine annealing** with a linear warm-up phase for the first 2% of training steps. **Gradient clipping** at max norm 1.0 applied before every optimizer step.
+  </Card>
+  <Card title="Precision and memory" icon="microchip">
+    **bfloat16 mixed precision** for activations and gradients. Float32 master weights maintained in the optimizer. **Gradient accumulation** to achieve large effective batch sizes on a single GPU. **Weight tying** to eliminate 38.6 M redundant parameters.
+  </Card>
+</Columns>

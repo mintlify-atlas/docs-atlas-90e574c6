@@ -1,0 +1,303 @@
+---
+title: "Tokenization: Turning Raw Text into Integer Tokens"
+description: "Learn how BPE tokenization splits text into subword pieces, how special tokens work, and how the SimpleTokenizer class wraps tiktoken for your GPT."
+---
+
+Tokenization is the step that converts raw text into the integer sequences a neural network can actually process. Before any weights are multiplied or any gradients are computed, every sentence you feed to a language model passes through a tokenizer that maps each piece of text to a number in its vocabulary. Understanding how that mapping works — and why BPE is the dominant approach — gives you a solid foundation for everything that follows.
+
+## The 5-year-old analogy
+
+Computers only understand numbers. They have no idea what the letter "A" means — they know 65, its ASCII code. So before you can train a model on the sentence "The cat sat on the mat," you need to convert every word into a number:
+
+```
+"cat"  ->  9246
+"sat"  ->  6734
+"on"   ->   389
+"the"  ->   279
+"mat"  -> 16789
+```
+
+The problem with whole-word lookup tables is scale. English has hundreds of thousands of words, and new ones appear constantly — "skibidi" didn't exist when GPT-2's tokenizer was built. You need a smarter approach that handles rare and unseen words without ballooning your vocabulary.
+
+## What is BPE (Byte-Pair Encoding)?
+
+Instead of assigning one number to every whole word, BPE breaks text into **frequent subword pieces**:
+
+```
+"unbelievably" -> "un" + "believ" + "ably"
+"running"      -> "runn" + "ing"
+"cats"         -> "cat" + "s"
+"lower"        -> "low" + "er"
+"GPT"          -> "G" + "P" + "T"
+```
+
+This is the exact algorithm used by GPT-2, GPT-3, GPT-4, and most modern large language models. A vocabulary of 50,000 subword pieces covers virtually all of English, plus code, mathematics, and dozens of other languages, because any unknown word can always be decomposed into characters.
+
+<Note>
+GPT-2's tokenizer has 50,257 tokens: 50,000 BPE merges, 256 raw byte tokens (one for every possible byte value), and 1 special `<|endoftext|>` token. This vocabulary is reused unchanged in later GPT models.
+</Note>
+
+## How BPE works — step by step
+
+BPE starts with every character as its own token, then repeatedly merges the most frequent adjacent pair until the vocabulary reaches the target size.
+
+**Starting text:** `"low lower lowest"`
+
+<Steps>
+  <Step title="Initial state — every character is its own token">
+    ```
+    l o w _ l o w e r _ l o w e s t
+    ```
+    The underscore `_` represents a word boundary (space). Every single character is a separate token.
+  </Step>
+  <Step title="Merge the most frequent pair: 'l' + 'o' → 'lo'">
+    ```
+    lo w _ lo w e r _ lo w e s t
+    ```
+    The pair `l o` appeared three times — more than any other pair — so it becomes the first merge.
+  </Step>
+  <Step title="Merge the next most frequent pair: 'lo' + 'w' → 'low'">
+    ```
+    low _ low e r _ low e s t
+    ```
+    `lo w` is now the most common pair (appears three times), so it merges into `low`.
+  </Step>
+  <Step title="Merge 'e' + 's' → 'es'">
+    ```
+    low _ low e r _ low es t
+    ```
+    `e s` becomes a token, setting up the next merge.
+  </Step>
+  <Step title="Merge 'es' + 't' → 'est'">
+    ```
+    low _ low e r _ low est
+    ```
+    The common English suffix `-est` is now a single token.
+  </Step>
+  <Step title="Merge 'low' + '_' → 'low_'">
+    ```
+    low_ low e r _ low_ est
+    ```
+    Word-final `low` (followed by a space boundary) becomes its own token. The final vocabulary includes: `{l, o, w, e, r, s, t, _, lo, ow, low, er, es, est, low_}`.
+  </Step>
+</Steps>
+
+After training BPE on billions of tokens, unseen words can still be represented:
+
+```
+"lowest"  -> "low" + "est"      (both in vocabulary!)
+"slower"  -> "s" + "low" + "er" (never seen before, but works!)
+```
+
+### Why BPE beats word-level tokenization
+
+| Problem | Word-level | BPE |
+|---|---|---|
+| "running" vs "run" | Different tokens — no shared meaning | "runn" + "ing" — the model sees the connection |
+| New word: "rizz" | Unknown token → model fails | "r" + "i" + "z" + "z" → works with characters |
+| Vocabulary size | 500K+ (too many rare words) | 50K (balanced, efficient) |
+| Unicode/emoji handling | Often broken | Character-level fallback never fails |
+
+## Emoji and unicode handling
+
+BPE operates on **bytes**, not characters. This means it can tokenize anything representable as bytes — emojis, Chinese, code, LaTeX, even binary data:
+
+```
+"Hello 😊"   ->  ["Hello", " Ġ", "😊"]     (Ġ = space prefix in GPT tokenizer)
+"你好"        ->  tokenized via UTF-8 bytes
+"def foo():" ->  ["def", "Ġfoo", "()", ":"]
+```
+
+The `Ġ` prefix is a GPT tokenizer convention: it marks that a token begins a new word (i.e., it was preceded by a space in the original text). `"cat"` and `"Ġcat"` are different tokens even though they look the same when decoded.
+
+## Special tokens
+
+Not every token represents a piece of text. Several tokens carry structural signals the model needs during training:
+
+| Token | ID | Purpose |
+|---|---|---|
+| `<\|endoftext\|>` | 50256 | Marks the end of a document (EOS) |
+| Normal subwords | 0–50255 | Regular BPE pieces |
+| Space-prefixed (`Ġ`) | varies | Token starts after a space |
+
+<Note>
+Capital and lowercase versions of the same word are **different tokens**. `"The"` and `"the"` have different IDs. The model treats them as entirely separate entries in its vocabulary.
+</Note>
+
+### Why the EOS token matters
+
+The `<|endoftext|>` token is critical and frequently overlooked. Without it, two separate documents concatenated into one training sequence look like a single document to the model:
+
+```python
+# WITHOUT EOS — two documents get merged:
+doc1 = "The cat sat."     # tokens: [464, 3797, 3332, 13]
+doc2 = "The dog ran."     # tokens: [464, 3290, 3407, 13]
+# Result: [464, 3797, 3332, 13, 464, 3290, 3407, 13]
+# Model sees: "...sat. The dog ran." — thinks it's ONE document
+# Learns: "sat." is often followed by "The" — WRONG!
+
+# WITH EOS — documents are separated:
+tokens = [464, 3797, 3332, 13, EOS, 464, 3290, 3407, 13, EOS]
+# Model learns: EOS means "we're done here, next token is unrelated"
+```
+
+The EOS token is also what the model outputs at the end of generation to signal that it has finished — without it, generation would continue indefinitely.
+
+## The SimpleTokenizer class — annotated
+
+The project wraps `tiktoken` in a thin class that provides a consistent interface and handles EOS encoding automatically.
+
+```python
+from dataclasses import dataclass
+import tiktoken
+
+
+@dataclass
+class TokenizerConfig:
+    """
+    WHAT: Keeps all tokenizer settings in one place.
+    WHY: Like a recipe card — consistent across the whole project.
+         Change one value and everything updates automatically.
+    """
+    name: str = "gpt2"                # WHAT: use GPT-2's pretrained BPE tokenizer
+                                       # WHY: same BPE as GPT-3/4 — 50K merges,
+                                       #      battle-tested on billions of documents,
+                                       #      and already trained (no weeks of work)
+    vocab_size: int = 50257           # WHAT: total number of unique tokens
+                                       # WHY: 50,257 is the exact GPT-2 vocabulary size
+                                       #      (50,000 merges + 256 byte tokens + 1 EOS)
+                                       #      This is the "goldilocks" number —
+                                       #      big enough for rare subwords,
+                                       #      small enough for fast matrix operations
+
+
+class SimpleTokenizer:
+    """
+    WHAT: Wraps tiktoken to give us a friendly, consistent interface.
+    WHY: tiktoken's raw API is low-level (you need to specify
+         allowed_special every call). This wrapper makes encode/decode
+         trivial — just call .encode("hello") and get tokens back.
+         
+         It also handles the EOS token consistently so we never
+         accidentally forget to add it during training data prep.
+    """
+
+    def __init__(self, config: TokenizerConfig = None):
+        """
+        WHAT: Initialize the tokenizer with GPT-2's BPE vocabulary.
+        WHY: We use a pretrained tokenizer because:
+             1. Training a tokenizer from scratch takes weeks of CPU time
+             2. GPT-2's tokenizer is open-source, fast, and well-tested
+             3. Using the same tokenizer as production models means our
+                code works identically to how GPT-3 tokenizes
+        """
+        self.config = config or TokenizerConfig()
+
+        # WHAT: Load the GPT-2 encoding from tiktoken
+        # WHY: tiktoken stores pretrained BPE merge tables.
+        #      get_encoding("gpt2") loads the exact 50K merges
+        #      that GPT-2 was trained with.
+        self.enc = tiktoken.get_encoding(self.config.name)
+
+        # WHAT: Define and encode the End-of-Sequence token
+        # WHY: <|endoftext|> is the special token that marks boundaries
+        #      between documents. During training, we insert it between
+        #      every document so the model learns where one text ends
+        #      and another begins.
+        self.eos_token = "<|endoftext|>"       # The string representation
+        self.eos_token_id = self.enc.encode(    # Convert to its token ID
+            self.eos_token,
+            allowed_special={self.eos_token}    # WHY: tiktoken blocks special tokens
+                                                #      by default for safety. We must
+                                                #      explicitly allow EOS encoding.
+        )[0]  # [0] because encode() returns a list — we want the single ID
+
+    def encode(self, text: str) -> list[int]:
+        """
+        WHAT: Turn text into a list of integer token IDs.
+        WHY: Neural networks only eat numbers. Raw strings like
+             "Hello world" mean nothing to matrix multiplication.
+
+        Example: "Hello world" -> [15496, 995]
+
+        Under the hood: tiktoken splits the text into subword pieces
+        using the pretrained BPE merge table, then looks up each
+        piece's ID in the vocabulary.
+        """
+        # WHAT: Use tiktoken's fast C/Rust-based encoder
+        # WHY: tiktoken is written in Rust, not Python.
+        #      It can tokenize hundreds of MB of text per second.
+        #      A pure Python BPE tokenizer would be 100x slower.
+        return self.enc.encode(text, allowed_special={self.eos_token})
+
+    def decode(self, ids: list[int]) -> str:
+        """
+        WHAT: Turn token IDs back into human-readable text.
+        WHY: After the model generates a sequence of token IDs
+             during inference, we need to convert them back to
+             text so humans can read the output.
+
+        Example: [15496, 995] -> "Hello world"
+        """
+        return self.enc.decode(ids)
+
+    @property
+    def vocab_size(self) -> int:
+        """
+        WHAT: How many unique tokens exist in the vocabulary.
+        WHY: This number determines the size of our model's output
+             layer — the final Linear layer must have vocab_size
+             outputs (one score for each possible next token).
+             
+             50,257 means the model chooses from 50,257 possibilities
+             every time it predicts the next word.
+        """
+        return self.config.vocab_size
+```
+
+Running the built-in self-test confirms the tokenizer is wired up correctly:
+
+```
+Test 1 — Basic:
+  Original: 'The cat sat on the mat.'
+  Encoded:  [464, 3797, 3332, 319, 262, 2603, 13]
+  Decoded:  'The cat sat on the mat.'
+  Match:    True
+
+Test 2 — EOS token:
+  String: '<|endoftext|>'
+  Token ID: 50256
+  Encode result: [50256]
+
+Test 3 — Rare word:
+  Encoded: [378, 420, 1634, 2013, 82, 622, 441, 979, 389]
+  Pieces:  ['ant', 'idis', 'establish', 'ment', 'ar', 'ian', 'ism']
+  Decoded: 'antidisestablishmentarianism'
+
+Test 4 — Emoji:
+  Encoded: [15496, 52430, 23530, 248, 995]
+  Decoded: 'Hello 😊 world'
+
+  Vocab size: 50,257
+```
+
+<Note>
+Even "antidisestablishmentarianism" — 28 characters, rarely seen in training data — decodes back perfectly. BPE's character-level fallback guarantees lossless round-trips for any Unicode input.
+</Note>
+
+## Frequently asked questions
+
+<AccordionGroup>
+  <Accordion title="Why 50,257 tokens and not a round number like 50,000?">
+    The 50,257 figure is `50,000 BPE merges + 256 byte-level tokens + 1 EOS token`. The 256 byte tokens guarantee the tokenizer can represent any input without an unknown-token fallback, because every byte value (0–255) has its own entry. The single EOS token is added on top.
+  </Accordion>
+  <Accordion title="Why does tiktoken block special tokens by default?">
+    Special tokens like `<|endoftext|>` are powerful — if user-supplied text contains them, the model could be tricked into thinking a document ended when it didn't. `tiktoken` raises an error unless you explicitly pass `allowed_special` to signal that you know what you're doing.
+  </Accordion>
+  <Accordion title="Can I train my own BPE tokenizer instead of reusing GPT-2's?">
+    Yes, libraries like `tokenizers` (Hugging Face) let you train BPE from scratch on your own corpus. For most projects, reusing GPT-2's tokenizer is the right call: it took weeks of CPU time to build, it's battle-tested on billions of documents, and it is functionally identical to GPT-3/4's tokenizer.
+  </Accordion>
+  <Accordion title="Does punctuation get its own token?">
+    It depends on context. A period immediately after a word (e.g., `"mat."`) is often merged with that word into a single token. A standalone period, or a period followed by a space, may be a separate token. You can check by running `tokenizer.encode(".")` and `tokenizer.decode([13])`.
+  </Accordion>
+</AccordionGroup>

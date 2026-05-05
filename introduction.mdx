@@ -1,0 +1,115 @@
+---
+title: "How to Train Your GPT: Project Overview and Guide Structure"
+description: "Learn what this 12-chapter guide covers, who it's for, what you'll build, and how each chapter is structured before you write a single line of code."
+---
+
+**How to Train Your GPT** is a 12-chapter, 3,671-line interactive textbook that teaches you to build a complete large language model from absolute scratch. You'll write every component yourself — tokenizer, embeddings, attention mechanism, training loop, and inference engine — with every single line annotated to explain what it does and why it's there. By the end, you'll have built the same family of architecture that powers ChatGPT, Claude, LLaMA, and Mistral.
+
+## What is a GPT?
+
+Imagine you have a friend who has read **every book in the library**. You start a sentence:
+
+> *"The cat sat on the..."*
+
+Your friend, having read so many books, guesses the next word: **"mat"**.
+
+That's all a GPT is: a machine that reads enormous amounts of text and learns to guess the next word. Everything else — the billions of parameters, the attention heads, the training runs — is engineering built in service of that single idea.
+
+| Concept | What it means |
+|---|---|
+| **GPT** | A very smart "next-word guesser" |
+| **Training** | Reading millions of books to learn patterns |
+| **Text generation** | Playing "finish my sentence" forever |
+| **Parameters** | The stored memory of all patterns learned |
+| **Attention** | Knowing which words matter most for each prediction |
+
+<Note>
+  GPT-4 and Claude architectures are proprietary and undisclosed. This guide teaches the best publicly-confirmed architecture: what LLaMA 3, Mistral, and Qwen 2.5 actually use.
+</Note>
+
+## Who this is for
+
+You don't need a machine learning background to follow this guide. If you can write basic Python, you're ready.
+
+| You are... | You need... |
+|---|---|
+| A Python developer curious about how ChatGPT actually works | Basic Python (functions, classes, lists) — no ML experience required |
+| A student who wants to deeply understand Transformers | Willingness to read ~3,600 lines of commented code |
+| An engineer evaluating LLM architectures | Understanding of trade-offs: RoPE vs. learned, RMSNorm vs. LayerNorm |
+| Someone who got lost at "attention" in other tutorials | Plain-English analogy plus a worked numeric example with real numbers |
+
+<Tip>
+  Prerequisites are just Python basics: variables, functions, classes, and `pip install`. No calculus, no linear algebra, no PyTorch experience required — those concepts are introduced as you go.
+</Tip>
+
+## What you'll build
+
+By the end of this guide you'll have built every component of a working 124M-parameter language model from scratch.
+
+| Component | Lines | What you'll understand |
+|---|---|---|
+| **BPE tokenizer** | ~60 | How GPT-4 splits "unbelievably" → "un" + "believ" + "ably" |
+| **Embeddings** | ~30 | How "cat" and "dog" end up near each other in 768-dimensional space |
+| **RoPE** | ~70 | Why LLaMA rotates vectors instead of adding position numbers |
+| **Multi-head attention** | ~120 | The exact 8-step computation behind every modern LLM |
+| **Transformer block** | ~50 | Why residual connections are the "gradient highway" |
+| **Full GPT model** | ~200 | 124M parameter model with weight tying and pre-norm |
+| **Training pipeline** | ~250 | AdamW, cosine warmup, mixed precision, gradient accumulation |
+| **Inference engine** | ~80 | KV cache, temperature, top-k/p, beam search |
+
+The guide contains roughly 860 lines of core model code and 2,800 lines of explanation and diagrams.
+
+## Architecture overview
+
+This guide implements a **modern decoder-only Transformer** — not the 2019 GPT-2 style, but the techniques used by LLaMA 3, Mistral, and Qwen 2.5 in production today.
+
+| Technique | Source model | Why it matters |
+|---|---|---|
+| **RoPE** | LLaMA, Mistral, Qwen | Relative position encoding without learned parameters |
+| **RMSNorm** | LLaMA, Mistral, Gemma | ~15% faster than LayerNorm, equally effective |
+| **SwiGLU** | PaLM, LLaMA, Gemini | Learns which information to pass or block |
+| **Pre-norm** | GPT-3, all modern | Stable training at 100+ layers |
+| **AdamW** | GPT-3+ | Better generalization than vanilla Adam |
+| **BPE** | GPT-2/3/4 | Handles any text, including unseen words and emoji |
+| **Weight tying** | GPT-2/3 | Saves ~30% parameters, improves training signal |
+| **Mixed precision** | All production LLMs | 2× speed, half memory, same quality |
+
+## How to read this guide
+
+Every chapter follows the same four-step structure so you always know where you are.
+
+<Steps>
+  <Step title="Analogy">
+    A plain-English, 5-year-old-level explanation to build intuition before any math. If you ever feel lost in the code, return here first.
+  </Step>
+  <Step title="Worked example">
+    Real numbers traced through the computation so you see exactly what happens at each step.
+  </Step>
+  <Step title="Annotated code">
+    Every line of Python includes a `WHAT` comment and a `WHY` comment — read top-to-bottom like a story.
+  </Step>
+  <Step title="Diagram">
+    A Mermaid flowchart or ASCII visualization showing data flowing through the component.
+  </Step>
+</Steps>
+
+<Tip>
+  Lost in the code? Jump back to the analogy. Confused by the math? Skip straight to the worked example.
+</Tip>
+
+## Key sections
+
+<CardGroup cols={2}>
+  <Card title="Quick start" icon="rocket" href="/quickstart">
+    Set up your environment, install dependencies, and run your first training script.
+  </Card>
+  <Card title="Tokenization" icon="scissors" href="/concepts/tokenization">
+    How BPE splits raw text into the numeric tokens the model actually sees.
+  </Card>
+  <Card title="Attention mechanism" icon="eye" href="/architecture/attention">
+    The heart of every Transformer: multi-head self-attention with a full 8-step walkthrough.
+  </Card>
+  <Card title="Training pipeline" icon="chart-line" href="/training/pipeline">
+    Cross-entropy loss, AdamW, cosine warmup, mixed precision, and gradient accumulation.
+  </Card>
+</CardGroup>

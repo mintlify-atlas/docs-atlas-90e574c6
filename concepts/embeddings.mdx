@@ -1,0 +1,234 @@
+---
+title: "Embeddings: Giving Token IDs Meaning in Vector Space"
+description: "Understand how the embedding layer maps token IDs to 768-dimensional vectors, how those vectors are learned during training, and why d_model size matters."
+---
+
+Once the tokenizer has converted your text into a list of integer IDs, the model still cannot do anything useful with raw numbers like 9246 or 6734. Those IDs are arbitrary — the number 9246 has no mathematical relationship to 6734 even if the words they represent are closely related. The embedding layer solves this by mapping every token ID to a dense vector of floating-point numbers where similar words end up close together, and that closeness is learned entirely from data.
+
+## The 5-year-old analogy
+
+Imagine each word lives in a **giant apartment building with 768 floors** (dimensions).
+
+- **"Cat"** lives on the 3rd floor east, 15th floor north, and so on.
+- **"Dog"** lives nearby — similar floors, because they're both animals.
+- **"Car"** lives far away — completely different floors.
+
+Every word has a coordinate in this building. Words with similar meanings have similar coordinates. That's what an embedding is: a coordinate for a word in meaning-space.
+
+The building starts with every word in a random room. Training is the process of slowly moving words to the right rooms until the geometry of the space reflects the geometry of language.
+
+## The famous king − man + woman = queen example
+
+The most cited illustration of what a trained embedding space can express:
+
+```python
+# In a well-trained embedding space:
+embedding("king")  - embedding("man")  + embedding("woman")
+≈ embedding("queen")
+```
+
+**Why does this work?** "King" carries two separable components in vector space:
+
+- Royalty (shared with "queen", "prince", "throne")
+- Masculinity (shared with "man", "he", "boy")
+
+Subtracting the "man" vector removes the masculinity component. Adding the "woman" vector adds femininity. The result is a vector that means "royalty + femininity" — which is exactly where "queen" lives.
+
+<Tip>
+This arithmetic wasn't programmed. It emerges naturally from gradient descent. The model discovers that a consistent "gender direction" exists in the embedding space because male and female versions of roles appear in similar syntactic contexts throughout the training corpus.
+</Tip>
+
+## How embeddings are learned during training
+
+Embeddings start as random noise. Here is the full journey from random to meaningful:
+
+### Step 1: random initialization
+
+When you create the model, every row of the embedding matrix is random:
+
+```
+Token 9246 ("cat"): [0.002, -0.013, 0.007, ..., -0.009]   (768 random numbers)
+Token 6734 ("sat"): [0.015, 0.001, -0.011, ..., 0.004]    (768 random numbers)
+```
+
+At this point, "cat" and "dog" are no closer to each other than "cat" and "the." The model knows nothing about meaning.
+
+### Step 2: training signal
+
+During training, the model sees `"The cat sat on the mat"` and tries to predict the next token. When it predicts "dog" instead of "mat," the loss is high. Backpropagation sends a correction signal:
+
+- "The embedding for 'cat' should move so it's more predictive of 'mat'"
+- "The embedding for 'mat' should move closer to things that follow 'the'"
+
+### Step 3: gradient descent updates embeddings
+
+```python
+# Simplified — what happens to one embedding during one training step:
+
+# Current embedding for token "cat":
+cat_embedding = [0.002, -0.013, 0.007, ..., -0.009]
+
+# After seeing "The ___ sat on the mat" (filling in "cat"):
+# The gradient says: "move dimension 5 up by 0.0003, dimension 42 down by 0.0001..."
+cat_embedding = [0.002, -0.012, 0.008, ..., -0.010]  # Tiny update
+
+# After MILLIONS of examples, patterns emerge:
+# - "cat" moves close to "dog", "pet", "feline"
+# - "cat" stays far from "car", "democracy", "photosynthesis"
+```
+
+### Step 4: emergent structure after training
+
+After training on billions of tokens, the 768-dimensional space develops structure that no human explicitly designed:
+
+```
+Direction 1 (0-63):   Animacy — alive vs non-alive
+Direction 2 (64-127): Size — big vs small
+Direction 3 (128-191): Sentiment — positive vs negative
+Direction 4 (192-255): Formality — formal vs casual
+...
+```
+
+These directions aren't assigned by humans. They emerge from the geometry of language because the model discovers it's useful to cluster related concepts together — they appear in similar contexts.
+
+## What determines embedding quality?
+
+| Factor | Good embeddings | Bad embeddings |
+|---|---|---|
+| Training data volume | 100B+ tokens | 1M tokens |
+| Embedding dimension | 768+ (GPT-2) to 12288 (GPT-3) | 64 or less |
+| Vocabulary size | 50K (balanced) | 5K (too small) or 500K (too sparse) |
+| Training duration | Converged loss | Early stopping |
+| Data diversity | Books, web, code, conversation | Single domain |
+
+## Why d_model size matters
+
+The embedding dimension (`d_model`) controls how much "space" each token has to express its meaning. A larger `d_model` means the model can represent finer distinctions between words — but it also means more parameters, more memory, and slower training.
+
+<Note>
+For reference: GPT-2 small uses `d_model=768` (a 50,257 × 768 table, about 38M parameters just for embeddings). GPT-3 uses `d_model=12288`, making its embedding table roughly 618M parameters — larger than all of GPT-2.
+</Note>
+
+## Why the code scales embeddings by √d_model
+
+After the embedding lookup, the code multiplies the result by `sqrt(d_model)`. This is not obvious, but it matters:
+
+```python
+# Without scaling:
+embedding = [0.01, -0.02, 0.01]    # Tiny
+position  = [0.84, 0.54, -1.00]    # Much larger — position dominates!
+
+# With scaling:
+embedding = [0.28, -0.55, 0.28]    # Scaled up
+position  = [0.84, 0.54, -1.00]    # Same magnitude — both matter
+```
+
+Positional encoding values are typically in the range `[-1, 1]` (cosine/sine values, or small rotations). Without scaling, the position signal would overwhelm the semantic signal. Scaling up the embeddings by `sqrt(d_model)` puts both at a comparable magnitude so neither drowns out the other.
+
+<Tip>
+After the scaled embedding and positional encoding are summed, the variance is controlled by the subsequent LayerNorm or RMSNorm layer. The `sqrt(d_model)` factor is specifically designed to keep the relative contribution of position and meaning balanced before that normalization.
+</Tip>
+
+## The Embedding class — annotated
+
+```python
+import torch
+import torch.nn as nn
+import math
+
+
+class Embedding(nn.Module):
+    """
+    WHAT: Converts token IDs into dense vectors (embeddings).
+    WHY: A neural network can't do meaningful math on integer IDs
+         like [9246, 6734]. It needs continuous numbers in vectors.
+
+         Think of it as a giant lookup table:
+         Row 9246 -> vector of 768 floats (the "meaning" of "cat")
+         Row 6734 -> vector of 768 floats (the "meaning" of "sat")
+
+         This table is LEARNED. Initially random, backpropagation
+         gradually moves related tokens closer together in the
+         768-dimensional space.
+    """
+
+    def __init__(self, vocab_size: int, d_model: int):
+        """
+        WHAT: Create the embedding table (a learnable matrix).
+
+        Args:
+            vocab_size: How many unique tokens exist (50,257 for GPT-2)
+            d_model:    Size of each embedding vector.
+
+        Examples by model scale:
+            GPT-2 small:  vocab=50257, d_model=768   → table is 50257 × 768
+            GPT-2 medium: vocab=50257, d_model=1024  → table is 50257 × 1024
+            GPT-3 small:  vocab=50257, d_model=4096  → table is 50257 × 4096
+            GPT-3 large:  vocab=50257, d_model=12288 → table is 50257 × 12288
+
+        WHY: The embedding dimension determines how much "space"
+             each word has to express its meaning. Bigger d_model =
+             more nuanced meanings can be captured, at the cost of
+             more parameters and slower training.
+        """
+        super().__init__()
+
+        # WHAT: The actual embedding weights — a [vocab_size, d_model] matrix
+        # WHY: nn.Embedding is an optimized lookup table. When you pass
+        #      a tensor of token IDs, it returns the corresponding rows.
+        #      It's backed by a standard weight matrix, so gradients
+        #      flow through it just like any nn.Linear layer.
+        #
+        #      Internally, nn.Embedding is essentially:
+        #      def forward(self, x):
+        #          return self.weight[x]  # index into the weight matrix
+        self.embed = nn.Embedding(vocab_size, d_model)
+
+        # WHAT: Cache d_model for the scaling step
+        self.d_model = d_model
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        WHAT: Look up embeddings for each token ID in the input.
+
+        Input shape:  [batch_size, seq_len]    — each cell is a token ID
+        Output shape: [batch_size, seq_len, d_model] — each cell is a vector
+
+        Example walkthrough:
+            Input:  [[464, 3797]]              # ["The", "cat"]
+            Step 1: Look up row 464 → [768 floats] for "The"
+                    Look up row 3797 → [768 floats] for "cat"
+            Step 2: Scale by sqrt(768) ≈ 27.7
+            Output: [[[v0..v767], [v0..v767]]] # 2 vectors of 768 numbers
+
+        WHY each dimension:
+            batch_size = how many sequences we process at once (parallelism)
+            seq_len    = how many tokens per sequence (context window)
+            d_model    = how rich each token's representation is (expressiveness)
+        """
+        # WHAT: Index into the embedding matrix
+        # WHY: For each token ID, return its row. This is an O(1)
+        #      lookup operation — very fast, even for 50K+ vocabulary.
+        embeddings = self.embed(x)  # [batch, seq_len, d_model]
+
+        # WHAT: Scale by sqrt(d_model)
+        # WHY: See explanation above. Without this, positional information
+        #      would be dwarfed by the embedding magnitudes after addition.
+        #      The factor sqrt(d_model) keeps the variance at roughly d_model
+        #      instead of 1.0, making embeddings and positions comparable.
+        return embeddings * math.sqrt(self.d_model)
+```
+
+## Quick understanding check
+
+<AccordionGroup>
+  <Accordion title="If 'cat' is token 9246, what is the embedding of 'cat'?">
+    Whatever row 9246 of the embedding matrix contains. Initially it's 768 random numbers. After training on billions of tokens, it becomes a 768-dimensional vector that numerically captures the "meaning" of "cat" — close to "dog", "kitten", and "pet", and far from "democracy" and "photosynthesis."
+  </Accordion>
+  <Accordion title="Why can't you use the raw token IDs (9246, 6734) directly?">
+    Because those IDs are arbitrary. The model would treat 9246 as mathematically greater than 6734, implying a false relationship. Embeddings let the model learn that "cat" (token 9246) is *similar* to "dog" — not because their IDs are close, but because their learned vectors are close in 768-dimensional space.
+  </Accordion>
+  <Accordion title="Do punctuation marks get embeddings too?">
+    Yes. Every token in the vocabulary gets a row in the embedding matrix, including `"."`, `","`, and `"?"`. The model learns that `"."` is followed by capitalized words, `"?"` is followed by answers, and `","` appears mid-sentence. Punctuation embeddings encode positional and syntactic patterns, not semantic meaning.
+  </Accordion>
+</AccordionGroup>
